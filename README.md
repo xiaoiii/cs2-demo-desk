@@ -56,3 +56,18 @@ HLTV 可能要求网站验证。出现提示时点击“打开验证窗口”，
 内置 7-Zip 组件的许可和源代码链接见 THIRD-PARTY-NOTICES.md。
 
 参考来源：[Steam 个人比赛](https://steamcommunity.com/my/gcpd/730/?tab=matchhistorypremier)、[HLTV 比赛列表](https://www.hltv.org/results)、[Electron 本机加密](https://www.electronjs.org/docs/latest/api/safe-storage)。
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+- Committer and reviewer: [xiaoiii](https://github.com/xiaoiii)
+- Approver: [xiaoiii](https://github.com/xiaoiii)
+
+Every release signing request must be approved manually. Release binaries must be produced from this public repository by the configured GitHub Actions workflow.
+
+### Privacy policy
+
+CS2 Demo Desk does not collect analytics, telemetry, advertising identifiers or crash reports. Steam login cookies are encrypted with the current Windows user's operating-system protection and remain on that computer. The program does not store the user's Steam password.
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. When the user refreshes matches, opens a source page or downloads a demo, the program connects to the selected source, including Steam Community, HLTV and the demo download host shown by that source. Those services apply their own privacy policies.
