@@ -1,0 +1,6 @@
+node_modules/
+release/
+test-results/
+*.log
+steam-session.bin
+library.json

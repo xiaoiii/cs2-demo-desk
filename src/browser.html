@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'none'; object-src 'none'; base-uri 'none'"><title>Demo 来源浏览器</title><link rel="stylesheet" href="style.css"></head>
+<body class="browser-body"><div class="browser-toolbar">
+  <button class="button subtle small" data-cmd="browser-back" aria-label="后退">←</button><button class="button subtle small" data-cmd="browser-forward" aria-label="前进">→</button><button class="button subtle small" data-cmd="browser-reload">刷新网页</button>
+  <form id="addressForm" class="browser-address-form"><input id="address" aria-label="网站地址" placeholder="Steam 官方登录页或赛事比赛详情页"></form>
+  <button class="button primary small" id="browserSync" data-cmd="sync">↻ 重新获取比赛</button><button class="button subtle small" data-cmd="scan">＋ 导入本页 Demo</button><button class="button subtle small" data-cmd="main">返回主窗口</button><button class="button subtle small" data-cmd="browser-external" aria-label="在系统浏览器打开当前网页"><span class="browser-external-label">外部打开 </span>↗</button>
+</div><div class="browser-tip" id="browserTip" role="status" aria-live="polite">登录或来源验证完成后会自动获取比赛，返回主窗口即可查看列表。</div><script src="browser.js"></script></body></html>

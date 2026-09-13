@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'"><title>CS2 Demo Desk</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<aside class="sidebar">
+  <div class="brand"><span class="brand-icon">D<span>↙</span></span><div>DEMO DESK<small>COUNTER-STRIKE 2</small></div></div>
+  <div class="nav-caption">工作空间</div>
+  <nav>
+    <button data-page="personal" class="nav active"><span>◉</span>个人比赛<span class="nav-count" id="personalCount">0</span></button>
+    <button data-page="tournament" class="nav"><span>◇</span>赛事中心<span class="nav-count" id="tournamentCount">0</span></button>
+    <button data-page="downloads" class="nav"><span>↓</span>下载队列<span class="nav-count" id="activeCount">0</span></button>
+    <button data-page="library" class="nav"><span>▤</span>本地 Demo 库</button>
+  </nav>
+  <div class="sidebar-bottom"><div class="local-badge"><i></i>本地存储 · 由你掌控</div><button class="nav" data-page="settings"><span>⚙</span>偏好设置</button><button class="nav" data-page="help"><span>?</span>使用指南</button><div class="version">DEMO DESK <span>v1.1.0 / WINDOWS</span></div></div>
+</aside>
+<main>
+  <header class="topbar"><div><span class="crumb">工作空间</span><span class="separator">/</span><span id="breadcrumb">个人比赛</span></div><button class="button subtle small" data-action="open-folder">▤ 打开下载目录</button></header>
+  <div class="content">
+    <section class="page-heading"><div><div class="eyebrow" id="eyebrow">YOUR MATCHES. YOUR NEXT LEVEL.</div><h1 id="heading">每一场，都值得复盘<span>.</span></h1><p id="subtitle">登录 Steam，自动获取近期官方比赛，选择你想复盘的每一场。</p></div><button class="button subtle" id="importButton">＋ 导入链接</button></section>
+    <div id="pageContent"></div>
+  </div>
+  <footer><span><i class="status-dot"></i><span id="footerStatus">就绪</span></span><span>CS2 DEMO DESK <b> / </b> REPLAY. REVIEW. IMPROVE.</span></footer>
+</main>
+<div id="toast" class="toast" role="status" hidden></div>
+<dialog id="importDialog"><form id="importForm"><div class="dialog-header"><div><div class="eyebrow">ADD TO YOUR DESK</div><h2>导入 Demo 下载链接</h2></div><button type="button" class="icon-button" id="closeDialog" aria-label="关闭">×</button></div><p>支持 .dem、.dem.bz2、ZIP、RAR、7z 和 HLTV Demo 下载地址，每行一个。</p><label for="importCategory">保存到</label><select id="importCategory"><option value="personal">个人比赛</option><option value="tournament">赛事中心</option></select><label for="links">下载地址</label><textarea id="links" rows="6" placeholder="https://…/match.dem.bz2&#10;https://www.hltv.org/download/demo/…" required></textarea><div class="hint">比赛详情页请通过来源浏览器打开，再点击“导入本页 Demo”。分享码请使用个人比赛页面的“分享码交给 CS2”。</div><div id="importError" class="error" role="alert"></div><div class="dialog-footer"><button type="button" class="button subtle" id="cancelDialog">取消</button><button type="submit" class="button primary">导入待选列表 →</button></div></form></dialog>
+<script src="renderer.js"></script></body></html>
