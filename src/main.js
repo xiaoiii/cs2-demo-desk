@@ -8,13 +8,19 @@ const { SOURCES, httpURL, sourceOf, uniquePath, inspectFile, parseLinks, shareCo
 const { createSyncEngine, clampDays } = require('./sync-engine');
 const { createSourceLoader } = require('./source-loader');
 const { createSessionVault } = require('./session-vault');
+const { createSecretStore } = require('./secret-store');
+const { createPwaLogin } = require('./pwa-login');
+const { detectSteam, findInLibraries, isCs2Running, preparePlayback, cleanupPlayback, launchPlayback } = require('./playback');
+const { validateSteamId, validateToken, fetchRecentMatches, createDemoDownload } = require('./pwa-client');
 const { extractSourcePage } = require('./source-parsers');
 
 const testing = process.env.DEMODESK_TEST === '1';
 if (testing && process.env.DEMODESK_DATA) app.setPath('userData', process.env.DEMODESK_DATA);
-let win, sourceWin, sourceView, browserCategory = 'personal', sourceSession, stateFile, saveTimer, quitting = false, syncEngine, loader, vault, recoveryTimer;
+let win, sourceWin, sourceView, browserCategory = 'personal', sourceSession, stateFile, saveTimer, quitting = false, syncEngine, loader, vault, pwaStore, recoveryTimer, pwaSyncing = false;
 let recoveryRevision = 0;
-let state = { items: [], settings: { directory: '', concurrency: 2, historyDays: 7, tournamentDays: 7, autoSync: true }, sync: { personal: { phase:'idle', message:'登录 Steam 后自动获取最近一周官匹记录。', lastSync:0, found:0 }, tournament: { phase:'idle', message:'将自动获取最近一周赛事并分类。', lastSync:0, found:0 } }, auth: { steamSaved: false, encryptionAvailable: false, error: '' }, notice: '', version: app.getVersion() };
+let pwaLogin, pwaRevision = 0;
+let playbackBusy = false;
+let state = { items: [], settings: { directory: '', concurrency: 2, historyDays: 7, tournamentDays: 7, perfectDays: 7, autoSync: true }, sync: { personal: { phase:'idle', message:'登录 Steam 后自动获取最近一周官匹记录。', lastSync:0, found:0 }, perfect: { phase:'login_required', message:'登录完美平台后自动获取 Demo。', lastSync:0, found:0 }, tournament: { phase:'idle', message:'将自动获取最近一周赛事并分类。', lastSync:0, found:0 } }, auth: { steamSaved: false, pwaSaved:false, encryptionAvailable: false, error: '' }, notice: '', version: app.getVersion() };
 const active = new Map(), pending = new Map(), extracting = new Map(), resolvingDownloads = new Set();
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });
@@ -26,6 +32,30 @@ function broadcast(save = true) {
   if (sourceWin && !sourceWin.isDestroyed()) sourceWin.webContents.send('desk:state', state);
 }
 function notice(message) { state.notice = message; broadcast(); }
+async function syncPerfect() {
+  if (pwaSyncing) return;
+  const credentials = pwaStore?.get();
+  const revision = pwaRevision;
+  if (!credentials) { Object.assign(state.sync.perfect, { phase:'login_required', message:'请点击使用 Steam 登录完美平台，自动获取凭证。' }); broadcast(); return; }
+  pwaSyncing = true; Object.assign(state.sync.perfect, { phase:'syncing', message:`正在获取最近 ${state.settings.perfectDays} 天的完美平台比赛…` }); broadcast();
+  try {
+    const rows = await fetchRecentMatches(credentials);
+    if (quitting || revision !== pwaRevision) return;
+    const cutoff = Date.now() - state.settings.perfectDays * 86400000;
+    const recent = rows.filter(row => !row.matchAt || row.matchAt >= cutoff);
+    for (const row of recent) {
+      let record = state.items.find(item => item.source === 'pwa' && item.matchId === row.matchId);
+      if (!record) { record = { id:randomUUID(), url:'', source:'pwa', category:'perfect', status:'ready', received:0, total:0, speed:0, created:Date.now(), files:[] }; state.items.unshift(record); }
+      Object.assign(record, { matchId:row.matchId, cupId:row.cupId, matchAt:row.matchAt, map:row.map, mode:row.mode, title:row.title || `完美平台比赛 ${row.matchId}` });
+      if (!['completed','downloading','paused','connecting','queued'].includes(record.status)) { record.status = 'ready'; record.error = ''; }
+    }
+    Object.assign(state.sync.perfect, { phase:rows.length >= 20 ? 'partial' : 'idle', message:`已获取 ${recent.length} 场近期完美平台比赛。${rows.length >= 20 ? '本次接口返回最近 20 场；更早比赛可能未包含在内，已保存的历史记录会保留。' : ''}`, lastSync:Date.now(), found:recent.length });
+  } catch (error) {
+    if (quitting || revision !== pwaRevision) return;
+    const expired = /失效|401|403/.test(error.message);
+    Object.assign(state.sync.perfect, { phase:expired ? 'login_required' : 'error', message:error.message });
+  } finally { pwaSyncing = false; if (!quitting) { broadcast(); if (revision !== pwaRevision && pwaStore?.get()) void syncPerfect(); } }
+}
 function addLinks(links, category) {
   let added = 0;
   for (const entry of links.slice(0, 300)) {
@@ -42,7 +72,7 @@ function setupSession(ses) {
   ses.setPermissionCheckHandler(() => false);
   ses.on('will-download', (event, item) => {
     const chain = item.getURLChain();
-    let record = [...pending.values()].find(x => chain.includes(x.url));
+    let record = [...pending.values()].find(x => chain.includes(x._downloadUrl || x.url));
     const mime = item.getMimeType();
     if (!record && !/\.(dem|bz2|zip|rar|7z)$/i.test(item.getFilename())) { event.preventDefault(); notice('已忽略非 Demo 文件下载。'); return; }
     if (!record) {
@@ -57,7 +87,7 @@ function setupSession(ses) {
     }
     try {
       fs.mkdirSync(state.settings.directory, { recursive: true });
-      record.path = uniquePath(state.settings.directory, item.getFilename(), state.items.map(x => x.path));
+      record.path = uniquePath(state.settings.directory, record.downloadName || item.getFilename(), state.items.map(x => x.path));
       item.setSavePath(record.path);
     } catch (e) { event.preventDefault(); record.status = 'failed'; record.error = `无法写入下载目录：${e.message}`; broadcast(); pump(); return; }
     record.status = 'downloading'; record.error = ''; record.total = item.getTotalBytes();
@@ -89,6 +119,20 @@ function pump() {
     const record = state.items.find(x => x.status === 'queued');
     if (!record) break;
     if (!record.url) {
+      if (record.source === 'pwa' && record.matchId) {
+        const credentials = pwaStore?.get();
+        if (!credentials) { record.status = 'failed'; record.error = '完美平台凭证不存在，请重新保存。'; broadcast(); continue; }
+        resolvingDownloads.add(record.id); record.status = 'resolving'; broadcast();
+        createDemoDownload({ ...credentials, matchId:record.matchId, cupId:record.cupId }).then(request => {
+          record.downloadName = request.filename;
+          Object.defineProperty(record, '_downloadUrl', { value:request.url, writable:true, configurable:true, enumerable:false });
+          record.status = 'connecting'; pending.set(record.id, record);
+          const timer = setTimeout(() => { pending.delete(record.id); if (record.status === 'connecting') { record.status = 'failed'; record.error = '连接完美平台 Demo 超时，请更新令牌后重试。'; broadcast(); pump(); } }, 45000);
+          Object.defineProperty(record, '_timer', { value:timer, writable:true, configurable:true, enumerable:false });
+          sourceSession.downloadURL(request.url, { headers:request.headers });
+        }).catch(error => { record.status = 'failed'; record.error = error.message; }).finally(() => { resolvingDownloads.delete(record.id); broadcast(); pump(); });
+        continue;
+      }
       if (record.source !== 'hltv' || !record.pageUrl) { record.status = 'unavailable'; record.error = '来源尚未提供 Demo 下载地址。'; broadcast(); continue; }
       resolvingDownloads.add(record.id);
       syncEngine.resolveRecord(record).then(() => {
@@ -192,17 +236,32 @@ async function extract(record) {
 }
 async function command(action, data = {}) {
   switch (action) {
+    case 'replay-controls-save': {
+      const controls = require('./replay-controls').normalize(data);
+      const {writeConfig,installConfig} = require('./replay-config');
+      const local = writeConfig(app.getPath('userData'),controls);
+      state.settings.replayControls = controls;
+      persist();
+      let installed = false;
+      const gameExe = state.settings.cs2InstallPath || findInLibraries([path.dirname(state.settings.steamPath || '')]);
+      if (gameExe && fs.existsSync(gameExe)) {
+        try { installConfig(gameExe,controls); installed = true; }
+        catch { notice('按键已保存；游戏目录写入失败，下次播放时会重试。'); return {local,installed:false}; }
+      }
+      notice('回放按键和 CFG 已保存，下次一键播放时自动生效。当前游戏内的按键不会立即改变。');
+      return {local,installed};
+    }
     case 'state': return state;
-    case 'sync': syncEngine.start(data.category); return true;
+    case 'sync': if (data.category === 'perfect') await syncPerfect(); else syncEngine.start(data.category); return true;
     case 'sync-settings': {
       const categories = [];
       if (data.historyDays !== undefined) { state.settings.historyDays = clampDays(data.historyDays); categories.push('personal'); }
       if (data.tournamentDays !== undefined) { state.settings.tournamentDays = clampDays(data.tournamentDays); categories.push('tournament'); }
+      if (data.perfectDays !== undefined) { state.settings.perfectDays = clampDays(data.perfectDays); categories.push('perfect'); }
       if (typeof data.autoSync === 'boolean') state.settings.autoSync = data.autoSync;
       broadcast();
       for (const category of categories) {
-        if (syncEngine.isRunning(category)) syncEngine.stop(category);
-        syncEngine.start(category);
+        if (category === 'perfect') syncPerfect(); else { if (syncEngine.isRunning(category)) syncEngine.stop(category); syncEngine.start(category); }
       }
       return true;
     }
@@ -246,12 +305,53 @@ async function command(action, data = {}) {
     case 'open-folder': { fs.mkdirSync(state.settings.directory, { recursive: true }); const error = await shell.openPath(state.settings.directory); if (error) throw new Error(error); return; }
     case 'reveal': { const r = state.items.find(x => x.id === data.id); const p = r?.files?.[0] || r?.path; if (!p || !fs.existsSync(p)) throw new Error('文件不存在，可能已被移动。'); shell.showItemInFolder(p); return; }
     case 'extract': { const r = state.items.find(x => x.id === data.id); if (!r) throw new Error('找不到该记录。'); return extract(r); }
+    case 'play-demo': {
+      if (playbackBusy) throw new Error('正在准备回放，请稍候。');
+      playbackBusy = true;
+      try {
+      const record = state.items.find(item => item.id === data.id);
+      if (!record || record.status !== 'completed') throw new Error('请先完成 Demo 下载。');
+      if (await isCs2Running()) throw new Error('CS2 已在运行。请先退出游戏，再点一键播放；Steam 重新启动游戏后会自动载入录像，无需输入控制台命令。');
+      if (!record.files?.length) await extract(record);
+      const filename = record.files?.[Number(data.index) || 0];
+      if (!filename) throw new Error('未找到可播放的 Demo。');
+      let executable = state.settings.steamPath || await detectSteam();
+      if (!executable || !fs.existsSync(executable)) {
+        const result = await dialog.showOpenDialog(win, { title:'选择 Steam 安装目录中的 steam.exe（只需一次）', properties:['openFile'], filters:[{ name:'Steam', extensions:['exe'] }] });
+        if (result.canceled) return false;
+        executable = result.filePaths[0];
+      }
+      let gameExe = findInLibraries([path.dirname(executable)]) || state.settings.cs2InstallPath;
+      if (!gameExe || !fs.existsSync(gameExe)) {
+        const result = await dialog.showOpenDialog(win,{title:'定位 CS2 的 game/bin/win64/cs2.exe（仅用于查找游戏目录）',properties:['openFile'],filters:[{name:'CS2 安装位置',extensions:['exe']}]});
+        if (result.canceled) return false;
+        gameExe = result.filePaths[0];
+      }
+      if (await isCs2Running()) throw new Error('CS2 已启动，请先退出游戏后再准备下一场回放。');
+      await cleanupPlayback(state.settings.playbackStage,gameExe);
+      notice('正在将录像准备到游戏目录，完成后由 Steam 自动启动回放…');
+      const stage = await preparePlayback(gameExe,filename,state.settings.replayControls || require('./replay-controls').defaults());
+      state.settings.playbackStage = stage;
+      state.settings.cs2InstallPath = gameExe;
+      if (await isCs2Running()) throw new Error('准备期间 CS2 已启动，请退出游戏后再次点击播放。');
+      await launchPlayback(executable, stage);
+      state.settings.steamPath = executable;
+      notice('录像已准备完成，已请求 Steam 执行自动回放配置；若弹出启动确认，请点启动，无需控制台操作。');
+      return true;
+      } finally { playbackBusy = false; }
+    }
     case 'play-command': {
       const r = state.items.find(x => x.id === data.id); const p = r?.files?.[Number(data.index) || 0];
       if (!p || !fs.existsSync(p)) throw new Error('请先解压 Demo，或检查本地文件。');
       clipboard.writeText(`playdemo "${p.replace(/\\/g, '/').replace(/["\r\n]/g, '')}"`); notice('已复制播放命令。在 CS2 开发者控制台中粘贴运行。'); return;
     }
     case 'share-code': { const code = shareCode(data.code); await shell.openExternal(`steam://rungame/730/76561202255233023/+csgo_download_match%20${code}`); notice('已将分享码交给 Steam / CS2。该方式的下载进度请在游戏内查看。'); return; }
+    case 'pwa-login': pwaLogin.open(); return true;
+    case 'pwa-save': {
+      const credentials = { steamId:validateSteamId(data.steamId), token:validateToken(data.token) };
+      pwaLogin.close(); pwaStore.save(credentials); pwaRevision++; state.auth.pwaSaved = true; state.auth.error = ''; notice('完美平台凭证已由 Windows 加密保存。'); await syncPerfect(); return true;
+    }
+    case 'pwa-clear': pwaLogin.close(); pwaRevision++; pwaStore.clear(); state.auth.pwaSaved = false; state.auth.pwaLogin = { phase:'idle', message:'凭证已清除，点击登录即可自动获取。' }; Object.assign(state.sync.perfect, { phase:'login_required', message:'完美平台凭证已清除，请点击登录。' }); notice('已清除完美平台凭证，历史记录和 Demo 文件已保留。'); return true;
     case 'logout': {
       recoveryRevision++; clearTimeout(recoveryTimer);
       syncEngine.stop(); loader.closeAll(); if (sourceWin) sourceWin.close();
@@ -273,8 +373,13 @@ app.whenReady().then(async () => {
       state.settings.concurrency = Math.min(4, Math.max(1, Number(saved.settings?.concurrency) || 2));
       state.settings.historyDays = clampDays(saved.settings?.historyDays);
       state.settings.tournamentDays = clampDays(saved.settings?.tournamentDays);
+      state.settings.perfectDays = clampDays(saved.settings?.perfectDays);
+      if (typeof saved.settings?.steamPath === 'string') state.settings.steamPath = saved.settings.steamPath;
+      if (typeof saved.settings?.cs2InstallPath === 'string') state.settings.cs2InstallPath = saved.settings.cs2InstallPath;
+      try { state.settings.replayControls = require('./replay-controls').normalize(saved.settings?.replayControls); } catch { state.settings.replayControls = require('./replay-controls').defaults(); }
+      if (saved.settings?.playbackStage && typeof saved.settings.playbackStage.gameExe === 'string' && typeof saved.settings.playbackStage.id === 'string') state.settings.playbackStage = saved.settings.playbackStage;
       state.settings.autoSync = saved.settings?.autoSync !== false;
-      for (const category of ['personal','tournament']) if (saved.sync?.[category]) Object.assign(state.sync[category], { lastSync: Number(saved.sync[category].lastSync) || 0, found: Number(saved.sync[category].found) || 0 });
+      for (const category of ['personal','perfect','tournament']) if (saved.sync?.[category]) Object.assign(state.sync[category], { lastSync: Number(saved.sync[category].lastSync) || 0, found: Number(saved.sync[category].found) || 0 });
       for (const r of state.items) { if (['queued','connecting','downloading','paused','interrupted','resolving'].includes(r.status)) { r.status = 'interrupted'; r.error = '上次退出时下载未完成。点击重试将重新下载。'; } r.extracting = false; r.speed = 0; }
     }
   } catch { state.notice = '历史记录读取失败，已启动空白列表。原记录保留在用户数据目录。'; stateFile = path.join(app.getPath('userData'), `library-recovered-${Date.now()}.json`); }
@@ -283,6 +388,8 @@ app.whenReady().then(async () => {
     Object.assign(state.auth, { steamSaved:status.saved, encryptionAvailable:status.available, error:status.error || '' }); broadcast(false);
   } });
   await vault.restore(); vault.start();
+  pwaStore = createSecretStore({ safeStorage, filename:path.join(app.getPath('userData'),'pwa-credentials.bin') });
+  try { pwaStore.load(); state.auth.pwaSaved = Boolean(pwaStore.get()); } catch (error) { state.auth.error = error.message; }
   loader = createSourceLoader(sourceSession);
   const syncUrls = { ...SOURCES };
   if (testing && process.env.DEMODESK_SOURCE_BASE) {
@@ -294,6 +401,15 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   win = new BrowserWindow({ width: 1380, height: 920, minWidth: 1020, minHeight: 700, icon: path.join(__dirname, 'assets', 'icon.png'), backgroundColor: '#111318', title: 'CS2 Demo Desk', webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  pwaLogin = createPwaLogin({ BrowserWindow, session, parent:win,
+    onCredentials: credentials => { pwaStore.save(credentials); pwaRevision++; state.auth.pwaSaved = true; state.auth.error = ''; },
+    onStatus: status => {
+      state.auth.pwaLogin = status; broadcast(false);
+      // Only predefined stage messages and booleans; never URLs, cookies, IDs or tokens.
+      try { atomicSave(path.join(app.getPath('userData'),'pwa-login-status.json'), { time:new Date().toISOString(), phase:status.phase, tokenCaptured:Boolean(status.tokenCaptured), identityCaptured:Boolean(status.identityCaptured), saved:state.auth.pwaSaved }); } catch {}
+      if (status.phase === 'saved') { notice('完美平台密钥已自动捕获并保存，正在获取最近比赛。'); void syncPerfect(); }
+    }
+  });
   win.webContents.on('will-navigate', event => event.preventDefault());
   ipcMain.handle('desk:call', async (event, action, data) => {
     const allowed = [localURL('index.html'), localURL('browser.html')];
@@ -303,7 +419,7 @@ app.whenReady().then(async () => {
   win.loadFile(path.join(__dirname, 'index.html'));
   win.webContents.once('did-finish-load', () => {
     if (state.settings.autoSync && (!testing || process.env.DEMODESK_TEST_AUTOSYNC === '1')) {
-      setTimeout(() => { if (!quitting) { syncEngine.start('personal'); syncEngine.start('tournament'); } }, 600);
+      setTimeout(() => { if (!quitting) { syncEngine.start('personal'); if (state.auth.pwaSaved) syncPerfect(); syncEngine.start('tournament'); } }, 600);
     }
   });
   win.on('close', event => {
@@ -312,7 +428,7 @@ app.whenReady().then(async () => {
       const answer = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['继续下载', '退出软件'], defaultId: 0, cancelId: 0, title: '仍有任务进行中', message: '退出会中断下载或解压。重新打开后，可手动重试下载。' });
       if (answer === 0) { event.preventDefault(); return; }
     }
-    event.preventDefault(); quitting = true; syncEngine.stop(); loader.closeAll(); clearTimeout(recoveryTimer);
+    event.preventDefault(); quitting = true; pwaLogin.close(); pwaRevision++; syncEngine.stop(); loader.closeAll(); clearTimeout(recoveryTimer);
     for (const [id, item] of active) { const r = state.items.find(x => x.id === id); if (r) r.status = 'interrupted'; item.cancel(); }
     for (const child of extracting.values()) child.kill();
     sourceWin?.close(); clearTimeout(saveTimer); persist();

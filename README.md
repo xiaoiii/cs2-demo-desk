@@ -1,6 +1,14 @@
-# CS2 Demo Desk 1.1 — Windows 自动获取版
+# CS2 Demo Desk 1.2.6 — Windows 自动获取版
 
 中文 CS2 比赛录像下载工具。个人官匹和赛事目录自动获取，勾选后下载；无需每场手动导入。独立项目，与 Valve、Steam、HLTV 无隶属关系。
+
+## 完美平台 Demo
+
+“完美平台”页面支持通过 SteamID64 和完美平台 `access_token` 获取近期个人比赛，并将可用 Demo 加入现有下载队列。凭证使用 Windows 本机加密保存，不写入比赛库、下载记录或日志；每次下载时才生成短期签名地址。默认显示最近 7 天，可调整为 1–365 天。
+
+点击“使用 Steam 登录完美平台”，在官方窗口完成 Steam 登录、Steam Guard 和授权。软件自动从本次独立会话中取得 SteamID 和完美平台令牌，捕获密钥并识别账号后由 Windows 加密保存，再刷新最近一周比赛（比赛接口失败不会丢弃凭证）；无需手动找密钥。登录窗口关闭后清理临时会话，不保存 Steam 密码。重新打开软件可继续使用已保存的平台凭证，过期后点击重新登录；也可切换账号或清除凭证。
+
+“手动填写（备用）”保留给已有凭证的用户。完美平台接口变化可能需要升级软件。自动登录的完整流程已通过模拟官方服务的 Windows 测试，真实账号授权及下载仍需在本机实测。
 
 ## 运行
 
@@ -44,6 +52,12 @@ HLTV 可能要求网站验证。出现提示时点击“打开验证窗口”，
 
 ## 开发与测试
 
+### 一键播放（1.2.0）
+
+本地库点击“一键播放”或“解压并播放”，软件先解压，将录像复制到 CS2 游戏目录下的独立短文件名，再通过 Steam 游戏 730 执行独立播放配置，自动载入录像并打开 DemoUI，无需控制台操作。复制需要游戏盘有足够空间；下一次准备回放时清理本工具上一份临时副本，原始下载文件保留。用户的 autoexec 和游戏配置不改动。未找到 Steam 或游戏时会提示选择安装位置。Steam 可能要求确认启动选项；确认后继续自动播放。若 CS2 已在运行，请先退出再点击播放。
+
+此功能为独立实现的游戏启动入口，尚未嵌入 CS2 Insight Agent 的后端、2D 回放或插件。Insight Agent 当前使用 PolyForm Noncommercial 许可证；本项目没有复制其代码。
+
     npm ci
     npm start
     npm test
@@ -71,3 +85,8 @@ Every release signing request must be approved manually. Release binaries must b
 CS2 Demo Desk does not collect analytics, telemetry, advertising identifiers or crash reports. Steam login cookies are encrypted with the current Windows user's operating-system protection and remain on that computer. The program does not store the user's Steam password.
 
 This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. When the user refreshes matches, opens a source page or downloads a demo, the program connects to the selected source, including Steam Community, HLTV and the demo download host shown by that source. Those services apply their own privacy policies.
+# 回放按键（1.2.6）
+
+左侧打开“回放按键”，选择暂停/继续、播放面板、播放速度、透视或观察视角等指令，并设置按键。点击“保存并更新 CFG”后，软件生成独立的 `demodesk_controls.cfg`，下次一键播放自动安装到游戏 `game/csgo/cfg` 并加载。支持增加、删除操作，冲突检查、预览、恢复默认以及关闭自动加载。
+
+修改不会立即改变正在运行的游戏。绑定会覆盖游戏同名按键，游戏可能持久保存它；取消绑定或关闭加载不等于恢复原键位，原键位可在游戏设置中恢复。工具不修改用户的 autoexec。

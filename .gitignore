@@ -3,4 +3,5 @@ release/
 test-results/
 *.log
 steam-session.bin
+pwa-credentials.bin
 library.json

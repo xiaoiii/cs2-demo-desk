@@ -55,7 +55,7 @@ async function launch() {
  await launch();
  await page.screenshot({path:path.join(output,'01-personal.png'),fullPage:true});
  assert.equal(await page.locator('h1').innerText(),'每一场，都值得复盘.');checks.push('Windows app launches with Chinese UI and empty real-data state');
- for(const target of ['tournament','downloads','library','settings','help','personal']){await page.locator(`[data-page="${target}"]`).click();assert.equal(await page.locator('#pageContent').isVisible(),true);}checks.push('All six navigation pages render');
+ for(const target of ['perfect','tournament','downloads','library','settings','help','personal']){await page.locator(`[data-page="${target}"]`).click();assert.equal(await page.locator('#pageContent').isVisible(),true);if(target==='perfect')assert.equal(await page.locator('#pwaLoginPanel').isVisible(),true);}checks.push('All seven navigation pages render, including Perfect World Arena credentials');
  await page.locator('#importButton').click();await page.locator('#links').fill('javascript:alert(1)');await page.locator('#importForm button[type=submit]').click();await page.locator('#importError').filter({hasText:'只支持'}).waitFor();await page.locator('#cancelDialog').click();checks.push('UI rejects unsafe pasted URLs');
  await rpc('source',{url:base+'/history',category:'personal'});
  await waitSource('/history');
@@ -86,7 +86,7 @@ async function launch() {
  assert.equal(s.items.find(x=>x.id===first.id).status,'cancelled');
  // Remote socket close events may lag the cancellation; inspect concurrency before cancellation.
  checks.push('Concurrency limit, pause, resume, cancel and queued task scheduling');
- await page.locator('[data-page="library"]').click();await page.screenshot({path:path.join(output,'02-library.png'),fullPage:true});
+ await page.locator('[data-page="library"]').click();assert.ok(await page.locator('[data-action="play-demo"]').count()>0);await page.screenshot({path:path.join(output,'02-library.png'),fullPage:true});checks.push('Downloaded demos expose one-click playback in the local library');
  await rpc('play-command',{id:bz.id});const clip=await app.evaluate(({clipboard})=>clipboard.readText());assert.ok(clip.startsWith('playdemo "'));assert.ok(clip.includes('fixture.dem'));checks.push('CS2 play command copied to Windows clipboard');
  await page.locator('[data-page="personal"]').click();await page.locator('#searchInput').fill('no-match-xyz');assert.equal(await page.locator('.demo-row').count(),0);await page.locator('#searchInput').fill('');checks.push('Search updates visible matches');
  await rpc('import',{text:base+'/slow3.dem',category:'personal'});s=await rpc('state');const restartItem=s.items.find(x=>x.url.endsWith('/slow3.dem'));await rpc('queue',{ids:[restartItem.id]});await waitFor(s=>s.items.find(x=>x.id===restartItem.id).received>0);await app.close();await launch();s=await rpc('state');assert.ok(['interrupted','cancelled'].includes(s.items.find(x=>x.id===restartItem.id).status));assert.ok(s.items.filter(x=>x.status==='completed').length>=5);checks.push('Download history persists across app restart; unfinished tasks remain retryable');

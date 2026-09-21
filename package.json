@@ -1,26 +1,54 @@
 {
   "name": "cs2-demo-desk",
   "productName": "CS2 Demo Desk",
-  "version": "1.1.0",
+  "version": "1.2.6",
   "description": "CS2 personal and tournament demo download manager for Windows",
   "author": "Demo Desk",
   "license": "MIT",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test tests/core.test.js tests/sync-engine.test.cjs tests/session-vault.test.cjs tests/source-parsers.test.cjs",
+    "test": "node --test tests/core.test.js tests/sync-engine.test.cjs tests/session-vault.test.cjs tests/source-parsers.test.cjs tests/pwa-client.test.cjs tests/secret-store.test.cjs tests/replay-controls.test.cjs tests/playback.test.cjs tests/pwa-login.test.cjs",
+    "test:pwa-login": "node tests/pwa-login-desktop.cjs",
     "test:desktop": "node tests/desktop.cjs",
     "test:auto": "node tests/auto-desktop.cjs",
     "dist": "electron-builder --win portable --x64"
   },
-  "dependencies": { "7zip-bin": "5.2.0" },
-  "devDependencies": { "electron": "^41.0.0", "electron-builder": "^26.0.12", "playwright": "^1.58.0" },
+  "dependencies": {
+    "7zip-bin": "5.2.0"
+  },
+  "devDependencies": {
+    "electron": "^41.0.0",
+    "electron-builder": "^26.0.12",
+    "playwright": "^1.58.0"
+  },
   "build": {
     "appId": "local.demodesk.cs2",
-    "directories": { "output": "release" },
-    "files": ["src/**/*", "package.json"],
-    "extraResources": [{ "from": "vendor/7zip", "to": "7zip" }, {"from":"THIRD-PARTY-NOTICES.md", "to":"THIRD-PARTY-NOTICES.md"}],
-    "win": { "target": "portable", "icon": "src/assets/icon.ico", "signExecutable": false },
-    "portable": { "artifactName": "CS2-Demo-Desk-${version}-Windows-x64.exe" }
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/7zip",
+        "to": "7zip"
+      },
+      {
+        "from": "THIRD-PARTY-NOTICES.md",
+        "to": "THIRD-PARTY-NOTICES.md"
+      }
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "src/assets/icon.ico",
+      "signExecutable": false
+    },
+    "portable": {
+      "artifactName": "CS2-Demo-Desk-${version}-Windows-x64.exe"
+    }
   }
 }
