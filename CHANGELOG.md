@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.7
+
+- Make the replay controls tab easier to configure: commands display Chinese function names and each binding has a keyboard capture button.
+- Press a key to bind it; detect conflicts immediately, cancel with Escape, and reject unsupported combinations. Keep dropdown selection for mouse buttons and wheel directions.
+
 ## 1.2.6
 
 - Add a replay controls editor with common commands, editable action names and key assignments, duplicate-key validation, add/remove, reset, enable switch and CFG preview.

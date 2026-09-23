@@ -11,7 +11,16 @@ async function launch(){
 (async()=>{
  try{
   await launch();
-  await page.getByLabel('绑定按键 1',{exact:true}).selectOption('P');
+  await page.getByLabel('录入按键 1',{exact:true}).click();
+  await page.keyboard.press('F7');
+  assert.match(await page.locator('#replaySaveStatus').textContent(),/已被/);
+  await page.keyboard.press('Control+P');
+  assert.match(await page.locator('#replaySaveStatus').textContent(),/不支持/);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.getByLabel('绑定按键 1',{exact:true}).inputValue(),'F6');
+  await page.getByLabel('录入按键 1',{exact:true}).click();
+  await page.keyboard.press('p');
+  assert.equal(await page.getByLabel('绑定按键 1',{exact:true}).inputValue(),'P');
   await page.click('#saveBindings');await page.waitForFunction(()=>document.querySelector('#replaySaveStatus').textContent.includes('已保存'));
   const file=path.join(profile,'demodesk_controls.cfg');assert.match(fs.readFileSync(file,'utf8'),/bind "P" "demo_togglepause"/);
   await page.getByLabel('绑定按键 2',{exact:true}).selectOption('P');await page.click('#saveBindings');
