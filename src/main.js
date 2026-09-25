@@ -13,6 +13,8 @@ const { createPwaLogin } = require('./pwa-login');
 const { detectSteam, findInLibraries, isCs2Running, preparePlayback, cleanupPlayback, launchPlayback } = require('./playback');
 const { validateSteamId, validateToken, fetchRecentMatches, createDemoDownload } = require('./pwa-client');
 const { extractSourcePage } = require('./source-parsers');
+const { normalizeOptions, getAutoLaunch, setAutoLaunch } = require('./startup-settings');
+const { createDownloadAutomation } = require('./download-automation');
 
 const testing = process.env.DEMODESK_TEST === '1';
 if (testing && process.env.DEMODESK_DATA) app.setPath('userData', process.env.DEMODESK_DATA);
@@ -20,6 +22,7 @@ let win, sourceWin, sourceView, browserCategory = 'personal', sourceSession, sta
 let recoveryRevision = 0;
 let pwaLogin, pwaRevision = 0;
 let playbackBusy = false;
+let automation, automationTimer, startupPending = true;
 let state = { items: [], settings: { directory: '', concurrency: 2, historyDays: 7, tournamentDays: 7, perfectDays: 7, autoSync: true }, sync: { personal: { phase:'idle', message:'登录 Steam 后自动获取最近一周官匹记录。', lastSync:0, found:0 }, perfect: { phase:'login_required', message:'登录完美平台后自动获取 Demo。', lastSync:0, found:0 }, tournament: { phase:'idle', message:'将自动获取最近一周赛事并分类。', lastSync:0, found:0 } }, auth: { steamSaved: false, pwaSaved:false, encryptionAvailable: false, error: '' }, notice: '', version: app.getVersion() };
 const active = new Map(), pending = new Map(), extracting = new Map(), resolvingDownloads = new Set();
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -91,7 +94,7 @@ function setupSession(ses) {
       item.setSavePath(record.path);
     } catch (e) { event.preventDefault(); record.status = 'failed'; record.error = `无法写入下载目录：${e.message}`; broadcast(); pump(); return; }
     record.status = 'downloading'; record.error = ''; record.total = item.getTotalBytes();
-    active.set(record.id, item); broadcast();
+    active.set(record.id, item); automation?.track([record.id]); broadcast();
     item.on('updated', (_, status) => {
       record.received = item.getReceivedBytes(); record.total = item.getTotalBytes(); record.speed = item.getCurrentBytesPerSecond();
       record.status = item.isPaused() || status === 'interrupted' ? 'paused' : 'downloading';
@@ -236,6 +239,26 @@ async function extract(record) {
 }
 async function command(action, data = {}) {
   switch (action) {
+    case 'automation-settings': {
+      const next = {...normalizeOptions(state.settings)};
+      for(const key of ['autoDownload','autoQuit'])if(data[key]!==undefined){
+        if(typeof data[key]!=='boolean')throw new Error('自动任务设置无效。');
+        next[key]=data[key];
+      }
+      if(data.autoDownloadSources!==undefined){
+        if(!Array.isArray(data.autoDownloadSources)||data.autoDownloadSources.some(x=>!['personal','perfect','tournament'].includes(x)))throw new Error('自动下载来源无效。');
+        next.autoDownloadSources=[...new Set(data.autoDownloadSources)];
+      }
+      if(next.autoDownload&&!next.autoDownloadSources.length)throw new Error('请至少选择一个自动下载来源。');
+      if(data.openAtLogin!==undefined){
+        if(typeof data.openAtLogin!=='boolean')throw new Error('开机启动设置无效。');
+        state.settings.openAtLogin = testing ? data.openAtLogin : setAutoLaunch(app,data.openAtLogin);
+      }
+      Object.assign(state.settings,next);
+      if(data.autoDownload===false){automation?.stopAutomatic();automation?.cancel();}
+      persist();broadcast();return true;
+    }
+    case 'cancel-auto-quit': automation?.cancel();return true;
     case 'replay-controls-save': {
       const controls = require('./replay-controls').normalize(data);
       const {writeConfig,installConfig} = require('./replay-config');
@@ -277,11 +300,12 @@ async function command(action, data = {}) {
     case 'browser-external': if (sourceView) return shell.openExternal(httpURL(sourceView.webContents.getURL())); return;
     case 'main': win.show(); win.focus(); return;
     case 'queue': {
+      const queued = [];
       for (const id of (data.ids || []).slice(0, 300)) {
         const x = state.items.find(x => x.id === id);
-        if (x && (['ready', 'catalog', 'failed', 'cancelled', 'interrupted'].includes(x.status) || (x.status === 'unavailable' && x.source === 'hltv')) && !active.has(id) && !resolvingDownloads.has(id)) { x.status = 'queued'; x.error = ''; x.received = 0; }
+        if (x && (['ready', 'catalog', 'failed', 'cancelled', 'interrupted'].includes(x.status) || (x.status === 'unavailable' && x.source === 'hltv')) && !active.has(id) && !resolvingDownloads.has(id)) { x.status = 'queued'; x.error = ''; x.received = 0; queued.push(id); }
       }
-      broadcast(); pump(); return;
+      automation?.track(queued); broadcast(); pump(); return;
     }
     case 'pause': { const item = active.get(data.id); if (item) { item.pause(); const r = state.items.find(x => x.id === data.id); r.status = 'paused'; r.speed = 0; broadcast(); } return; }
     case 'resume': { const item = active.get(data.id); if (item) { item.resume(); state.items.find(x => x.id === data.id).status = 'downloading'; broadcast(); } return; }
@@ -379,11 +403,18 @@ app.whenReady().then(async () => {
       try { state.settings.replayControls = require('./replay-controls').normalize(saved.settings?.replayControls); } catch { state.settings.replayControls = require('./replay-controls').defaults(); }
       if (saved.settings?.playbackStage && typeof saved.settings.playbackStage.gameExe === 'string' && typeof saved.settings.playbackStage.id === 'string') state.settings.playbackStage = saved.settings.playbackStage;
       state.settings.autoSync = saved.settings?.autoSync !== false;
+      Object.assign(state.settings,normalizeOptions(saved.settings));
+      if(testing)state.settings.openAtLogin=saved.settings?.openAtLogin===true;
       for (const category of ['personal','perfect','tournament']) if (saved.sync?.[category]) Object.assign(state.sync[category], { lastSync: Number(saved.sync[category].lastSync) || 0, found: Number(saved.sync[category].found) || 0 });
       for (const r of state.items) { if (['queued','connecting','downloading','paused','interrupted','resolving'].includes(r.status)) { r.status = 'interrupted'; r.error = '上次退出时下载未完成。点击重试将重新下载。'; } r.extracting = false; r.speed = 0; }
     }
   } catch { state.notice = '历史记录读取失败，已启动空白列表。原记录保留在用户数据目录。'; stateFile = path.join(app.getPath('userData'), `library-recovered-${Date.now()}.json`); }
   sourceSession = session.fromPartition('persist:demo-sources'); setupSession(sourceSession);
+  Object.assign(state.settings,normalizeOptions(state.settings));
+  if(!testing){
+    try { state.settings.openAtLogin=getAutoLaunch(app); }
+    catch {state.settings.openAtLogin=false;}
+  }
   vault = createSessionVault({ session:sourceSession, safeStorage, filename:path.join(app.getPath('userData'),'steam-session.bin'), onStatus: status => {
     Object.assign(state.auth, { steamSaved:status.saved, encryptionAvailable:status.available, error:status.error || '' }); broadcast(false);
   } });
@@ -417,10 +448,23 @@ app.whenReady().then(async () => {
     try { return { ok: true, value: await command(action, data) }; } catch (e) { return { ok: false, error: e.message }; }
   });
   win.loadFile(path.join(__dirname, 'index.html'));
+  automation = createDownloadAutomation({state,queue:ids=>{void command('queue',{ids});},
+    isBusy:()=>startupPending||active.size||pending.size||extracting.size||resolvingDownloads.size||playbackBusy||pwaSyncing||Boolean(sourceWin&&!sourceWin.isDestroyed())||BrowserWindow.getAllWindows().length>1,
+    quit:()=>{if(!quitting)win.close();},onChange:()=>broadcast(false)});
+  automationTimer=setInterval(()=>{if(!quitting)automation.tick();},500);
   win.webContents.once('did-finish-load', () => {
-    if (state.settings.autoSync && (!testing || process.env.DEMODESK_TEST_AUTOSYNC === '1')) {
-      setTimeout(() => { if (!quitting) { syncEngine.start('personal'); if (state.auth.pwaSaved) syncPerfect(); syncEngine.start('tournament'); } }, 600);
-    }
+    setTimeout(async()=>{
+      if(quitting)return;
+      try {
+        if(!testing||process.env.DEMODESK_TEST_AUTOSYNC==='1'){
+          const options=normalizeOptions(state.settings), sources=new Set();
+          if(state.settings.autoSync){sources.add('personal');sources.add('tournament');if(state.auth.pwaSaved)sources.add('perfect');}
+          if(options.autoDownload){automation.begin(options.autoDownloadSources);options.autoDownloadSources.forEach(x=>sources.add(x));}
+          await Promise.allSettled([...sources].map(c=>c==='perfect'?syncPerfect():syncEngine.start(c)));
+          automation.settled();
+        }
+      } finally {startupPending=false;}
+    },600);
   });
   win.on('close', event => {
     if (quitting) return;
@@ -428,7 +472,7 @@ app.whenReady().then(async () => {
       const answer = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['继续下载', '退出软件'], defaultId: 0, cancelId: 0, title: '仍有任务进行中', message: '退出会中断下载或解压。重新打开后，可手动重试下载。' });
       if (answer === 0) { event.preventDefault(); return; }
     }
-    event.preventDefault(); quitting = true; pwaLogin.close(); pwaRevision++; syncEngine.stop(); loader.closeAll(); clearTimeout(recoveryTimer);
+    event.preventDefault(); quitting = true; clearInterval(automationTimer); pwaLogin.close(); pwaRevision++; syncEngine.stop(); loader.closeAll(); clearTimeout(recoveryTimer);
     for (const [id, item] of active) { const r = state.items.find(x => x.id === id); if (r) r.status = 'interrupted'; item.cancel(); }
     for (const child of extracting.values()) child.kill();
     sourceWin?.close(); clearTimeout(saveTimer); persist();

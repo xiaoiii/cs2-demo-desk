@@ -1,18 +1,19 @@
 {
   "name": "cs2-demo-desk",
   "productName": "CS2 Demo Desk",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "description": "CS2 personal and tournament demo download manager for Windows",
   "author": "Demo Desk",
   "license": "MIT",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test tests/core.test.js tests/sync-engine.test.cjs tests/session-vault.test.cjs tests/source-parsers.test.cjs tests/pwa-client.test.cjs tests/secret-store.test.cjs tests/replay-controls.test.cjs tests/playback.test.cjs tests/pwa-login.test.cjs",
+    "test": "node --test tests/core.test.js tests/sync-engine.test.cjs tests/session-vault.test.cjs tests/source-parsers.test.cjs tests/pwa-client.test.cjs tests/secret-store.test.cjs tests/replay-controls.test.cjs tests/playback.test.cjs tests/pwa-login.test.cjs tests/download-automation.test.cjs",
     "test:pwa-login": "node tests/pwa-login-desktop.cjs",
     "test:desktop": "node tests/desktop.cjs",
     "test:auto": "node tests/auto-desktop.cjs",
-    "dist": "electron-builder --win portable --x64"
+    "dist": "electron-builder --win portable --x64",
+    "test:startup": "node tests/startup-desktop.cjs"
   },
   "dependencies": {
     "7zip-bin": "5.2.0"

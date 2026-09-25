@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.8
+
+- Add independent settings for Windows login startup, downloading missing demos on app launch, and exiting after successful downloads.
+- Register the persistent portable EXE path instead of Electron's temporary extraction path; inspect the named Windows login entry and respect disabled startup items.
+- Refresh selected sources before queuing recent undownloaded matches. Skip completed, cancelled and undated records; allow official, Perfect World and tournament sources to be selected independently.
+- Wait for sync, downloads, pauses, extraction and playback preparation; retain the window on failures or incomplete source results. Successful completion shows a cancellable ten-second exit countdown.
+
 ## 1.2.7
 
 - Make the replay controls tab easier to configure: commands display Chinese function names and each binding has a keyboard capture button.
