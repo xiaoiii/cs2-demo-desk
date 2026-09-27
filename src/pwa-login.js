@@ -65,7 +65,7 @@ async function resolveSessionIdentity(ses) {
     return validateSteamId(id);
   } catch { return ''; }
 }
-function createPwaLogin({ BrowserWindow, session, parent, validate = async () => {}, onCredentials, onStatus }) {
+function createPwaLogin({ BrowserWindow, session, parent, validate = async () => {}, configureSession, releaseSession, onCredentials, onStatus }) {
   let current = null;
   function close() { current?.finish(); }
   function open() {
@@ -91,7 +91,7 @@ function createPwaLogin({ BrowserWindow, session, parent, validate = async () =>
       ses.webRequest?.onHeadersReceived(null);
       if (current === run) current = null;
       if (!window.isDestroyed()) window.destroy();
-      void ses.clearStorageData().catch(() => {});
+      void Promise.resolve(run.configuration).catch(()=>{}).then(()=>releaseSession?.(ses)).catch(()=>{}).then(()=>ses.clearStorageData()).catch(() => {});
       if (!completed) onStatus({ phase:'closed', message:run.tokenCaptured ? '登录窗口已关闭；本次已收到令牌，但尚未完成账号识别或保存。请重新打开登录。' : '登录窗口已关闭；本次尚未收到完美平台令牌。', tokenCaptured:run.tokenCaptured, identityCaptured:run.identityCaptured });
     };
     run.finish = finish;
@@ -176,7 +176,9 @@ function createPwaLogin({ BrowserWindow, session, parent, validate = async () =>
     run.poll = setInterval(() => { if (!run.stopped && !wc.isDestroyed?.()) void capture(wc.getURL()); }, 1500);
     run.poll.unref?.();
     status('waiting', '请在官方窗口登录 Steam 并授权完美平台，完成后自动保存。');
-    void window.loadURL(LOGIN_URL).catch(() => status('error', '官方登录页面加载失败，请检查网络后重试。'));
+    const load=()=>{if(!run.stopped)return window.loadURL(LOGIN_URL);};
+    run.configuration = configureSession ? Promise.resolve().then(()=>configureSession(ses)) : null;
+    void (run.configuration ? run.configuration.then(load) : load())?.catch(() => status('error', '官方登录页面加载失败，请检查网络后重试。'));
   }
   return { open, close };
 }

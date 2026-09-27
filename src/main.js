@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog, shell, clipboard, Menu, safeStorage } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog, shell, clipboard, Menu, Tray, safeStorage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -15,6 +15,8 @@ const { validateSteamId, validateToken, fetchRecentMatches, createDemoDownload }
 const { extractSourcePage } = require('./source-parsers');
 const { normalizeOptions, getAutoLaunch, setAutoLaunch } = require('./startup-settings');
 const { createDownloadAutomation } = require('./download-automation');
+const { createTrayController } = require('./tray-controller');
+const {normalizeNetwork,applyNetwork,testConnection,closeNetworks}=require('./steam-network');
 
 const testing = process.env.DEMODESK_TEST === '1';
 if (testing && process.env.DEMODESK_DATA) app.setPath('userData', process.env.DEMODESK_DATA);
@@ -23,6 +25,10 @@ let recoveryRevision = 0;
 let pwaLogin, pwaRevision = 0;
 let playbackBusy = false;
 let automation, automationTimer, startupPending = true;
+let trayController, exitRequested=false;
+let networkTesting=false,networkSaving=false;
+function showMain(page){if(!win||win.isDestroyed())return;if(win.isMinimized())win.restore();win.show();win.focus();if(page)win.webContents.send('desk:navigate',page);}
+function requestExit(){if(quitting)return;exitRequested=true;if(win&&!win.isDestroyed())win.close();}
 let state = { items: [], settings: { directory: '', concurrency: 2, historyDays: 7, tournamentDays: 7, perfectDays: 7, autoSync: true }, sync: { personal: { phase:'idle', message:'登录 Steam 后自动获取最近一周官匹记录。', lastSync:0, found:0 }, perfect: { phase:'login_required', message:'登录完美平台后自动获取 Demo。', lastSync:0, found:0 }, tournament: { phase:'idle', message:'将自动获取最近一周赛事并分类。', lastSync:0, found:0 } }, auth: { steamSaved: false, pwaSaved:false, encryptionAvailable: false, error: '' }, notice: '', version: app.getVersion() };
 const active = new Map(), pending = new Map(), extracting = new Map(), resolvingDownloads = new Set();
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -30,6 +36,12 @@ app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(
 const localURL = name => pathToFileURL(path.join(__dirname, name)).href;
 function persist() { try { atomicSave(stateFile, { items: state.items, settings: state.settings, sync: state.sync }); } catch (e) { state.notice = `保存记录失败：${e.message}`; } }
 function broadcast(save = true) {
+  trayController?.update(state);
+  if(win&&!win.isDestroyed()){
+    const tasks=state.items.filter(x=>['downloading','connecting','paused'].includes(x.status));
+    const total=tasks.reduce((n,x)=>n+(x.total||0),0),received=tasks.reduce((n,x)=>n+(x.received||0),0);
+    win.setProgressBar(tasks.length?(total?Math.min(1,received/total):2):-1,{mode:tasks.some(x=>x.status==='paused')?'paused':'normal'});
+  }
   if (save) { clearTimeout(saveTimer); saveTimer = setTimeout(persist, 200); }
   if (win && !win.isDestroyed()) win.webContents.send('desk:state', state);
   if (sourceWin && !sourceWin.isDestroyed()) sourceWin.webContents.send('desk:state', state);
@@ -117,7 +129,7 @@ function setupSession(ses) {
   });
 }
 function pump() {
-  if (quitting) return;
+  if (quitting || networkSaving) return;
   while (active.size + pending.size + resolvingDownloads.size < state.settings.concurrency) {
     const record = state.items.find(x => x.status === 'queued');
     if (!record) break;
@@ -238,7 +250,33 @@ async function extract(record) {
   });
 }
 async function command(action, data = {}) {
+  if(networkSaving && !['state','hide-to-tray','cancel-auto-quit'].includes(action))throw new Error('正在切换 Steam 加速，请稍候。');
   switch (action) {
+    case 'steam-network-save': {
+      const next=normalizeNetwork(data);
+      if(networkSaving||active.size||pending.size||resolvingDownloads.size||pwaSyncing||syncEngine.isRunning('personal')||syncEngine.isRunning('tournament')||BrowserWindow.getAllWindows().length>1)throw new Error('请等待下载或获取结束，并关闭来源 / 登录窗口后再修改网络设置。');
+      networkSaving=true;
+      try{await applyNetwork(sourceSession,next);state.settings.steamNetwork=next;persist();notice('Steam 网络设置已保存，请重新刷新比赛或打开登录页面。');return next;}
+      catch(error){await applyNetwork(sourceSession,state.settings.steamNetwork).catch(()=>{});throw error;}
+      finally{networkSaving=false;pump();}
+    }
+    case 'steam-network-test': {
+      const next=normalizeNetwork(data);if(networkTesting)throw new Error('连接测试正在进行，请稍候。');networkTesting=true;
+      const ses=session.fromPartition(`steam-network-test-${randomUUID()}`,{cache:false});
+      try{return await testConnection(ses,next);}finally{await applyNetwork(ses,{enabled:false});await ses.clearStorageData();networkTesting=false;}
+    }
+    case 'hide-to-tray': if(!trayController)throw new Error('托盘图标暂不可用。');win.hide();trayController.announce();return true;
+    case 'exit-app': requestExit();return true;
+    case 'refresh-all': await Promise.allSettled([syncEngine.start('personal'),syncEngine.start('tournament'),...(state.auth.pwaSaved?[syncPerfect()]:[])]);return true;
+    case 'pause-all':
+    case 'resume-all': {
+      for(const [id,item] of active){
+        const r=state.items.find(x=>x.id===id);if(!r)continue;
+        if(action==='pause-all'&&r.status==='downloading'){item.pause();r.status='paused';r.speed=0;}
+        if(action==='resume-all'&&r.status==='paused'){item.resume();r.status='downloading';}
+      }
+      broadcast();return true;
+    }
     case 'automation-settings': {
       const next = {...normalizeOptions(state.settings)};
       for(const key of ['autoDownload','autoQuit'])if(data[key]!==undefined){
@@ -403,6 +441,7 @@ app.whenReady().then(async () => {
       try { state.settings.replayControls = require('./replay-controls').normalize(saved.settings?.replayControls); } catch { state.settings.replayControls = require('./replay-controls').defaults(); }
       if (saved.settings?.playbackStage && typeof saved.settings.playbackStage.gameExe === 'string' && typeof saved.settings.playbackStage.id === 'string') state.settings.playbackStage = saved.settings.playbackStage;
       state.settings.autoSync = saved.settings?.autoSync !== false;
+      try{state.settings.steamNetwork=normalizeNetwork(saved.settings?.steamNetwork);}catch{state.settings.steamNetwork=normalizeNetwork();}
       Object.assign(state.settings,normalizeOptions(saved.settings));
       if(testing)state.settings.openAtLogin=saved.settings?.openAtLogin===true;
       for (const category of ['personal','perfect','tournament']) if (saved.sync?.[category]) Object.assign(state.sync[category], { lastSync: Number(saved.sync[category].lastSync) || 0, found: Number(saved.sync[category].found) || 0 });
@@ -410,6 +449,9 @@ app.whenReady().then(async () => {
     }
   } catch { state.notice = '历史记录读取失败，已启动空白列表。原记录保留在用户数据目录。'; stateFile = path.join(app.getPath('userData'), `library-recovered-${Date.now()}.json`); }
   sourceSession = session.fromPartition('persist:demo-sources'); setupSession(sourceSession);
+  state.settings.steamNetwork=normalizeNetwork(state.settings.steamNetwork);
+  try {await applyNetwork(sourceSession,state.settings.steamNetwork);}
+  catch {state.settings.steamNetwork={enabled:false};state.notice='内置 Steam 加速启动失败，已恢复普通连接。可在设置中重新开启。';}
   Object.assign(state.settings,normalizeOptions(state.settings));
   if(!testing){
     try { state.settings.openAtLogin=getAutoLaunch(app); }
@@ -433,6 +475,8 @@ app.whenReady().then(async () => {
   win = new BrowserWindow({ width: 1380, height: 920, minWidth: 1020, minHeight: 700, icon: path.join(__dirname, 'assets', 'icon.png'), backgroundColor: '#111318', title: 'CS2 Demo Desk', webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   pwaLogin = createPwaLogin({ BrowserWindow, session, parent:win,
+    configureSession:ses=>applyNetwork(ses,state.settings.steamNetwork),
+    releaseSession:ses=>applyNetwork(ses,{enabled:false}),
     onCredentials: credentials => { pwaStore.save(credentials); pwaRevision++; state.auth.pwaSaved = true; state.auth.error = ''; },
     onStatus: status => {
       state.auth.pwaLogin = status; broadcast(false);
@@ -448,12 +492,17 @@ app.whenReady().then(async () => {
     try { return { ok: true, value: await command(action, data) }; } catch (e) { return { ok: false, error: e.message }; }
   });
   win.loadFile(path.join(__dirname, 'index.html'));
+  if(!testing||process.env.DEMODESK_TEST_TRAY==='1'){
+    try {trayController=createTrayController({Tray,Menu,icon:path.join(__dirname,'assets','icon.ico'),show:showMain,action:name=>{void command(name).catch(e=>notice(e.message));},exit:requestExit});trayController.update(state);}
+    catch {notice('托盘图标创建失败，关闭窗口时将退出软件。');}
+  }
   automation = createDownloadAutomation({state,queue:ids=>{void command('queue',{ids});},
-    isBusy:()=>startupPending||active.size||pending.size||extracting.size||resolvingDownloads.size||playbackBusy||pwaSyncing||Boolean(sourceWin&&!sourceWin.isDestroyed())||BrowserWindow.getAllWindows().length>1,
-    quit:()=>{if(!quitting)win.close();},onChange:()=>broadcast(false)});
+    isBusy:()=>startupPending||networkTesting||networkSaving||active.size||pending.size||extracting.size||resolvingDownloads.size||playbackBusy||pwaSyncing||Boolean(sourceWin&&!sourceWin.isDestroyed())||BrowserWindow.getAllWindows().length>1,
+    quit:requestExit,onChange:()=>broadcast(false)});
   automationTimer=setInterval(()=>{if(!quitting)automation.tick();},500);
   win.webContents.once('did-finish-load', () => {
     setTimeout(async()=>{
+      while(networkSaving&&!quitting)await new Promise(resolve=>setTimeout(resolve,100));
       if(quitting)return;
       try {
         if(!testing||process.env.DEMODESK_TEST_AUTOSYNC==='1'){
@@ -468,16 +517,18 @@ app.whenReady().then(async () => {
   });
   win.on('close', event => {
     if (quitting) return;
+    if(trayController&&!exitRequested){event.preventDefault();win.hide();trayController.announce();return;}
     if (!testing && (active.size || pending.size || extracting.size || resolvingDownloads.size)) {
       const answer = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['继续下载', '退出软件'], defaultId: 0, cancelId: 0, title: '仍有任务进行中', message: '退出会中断下载或解压。重新打开后，可手动重试下载。' });
-      if (answer === 0) { event.preventDefault(); return; }
+      if (answer === 0) { exitRequested=false;event.preventDefault(); return; }
     }
     event.preventDefault(); quitting = true; clearInterval(automationTimer); pwaLogin.close(); pwaRevision++; syncEngine.stop(); loader.closeAll(); clearTimeout(recoveryTimer);
     for (const [id, item] of active) { const r = state.items.find(x => x.id === id); if (r) r.status = 'interrupted'; item.cancel(); }
     for (const child of extracting.values()) child.kill();
     sourceWin?.close(); clearTimeout(saveTimer); persist();
     vault.stop();
-    Promise.resolve(vault.save()).catch(() => {}).finally(() => { clearTimeout(saveTimer); persist(); win.destroy(); app.quit(); });
+    Promise.resolve(vault.save()).catch(() => {}).then(()=>closeNetworks()).catch(()=>{}).finally(() => { clearTimeout(saveTimer); persist(); trayController?.destroy();trayController=null;win.destroy(); app.quit(); });
   });
 });
 app.on('window-all-closed', () => app.quit());
+app.on('before-quit',event=>{if(!quitting&&win&&!win.isDestroyed()){event.preventDefault();requestExit();}});

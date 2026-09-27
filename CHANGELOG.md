@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.9
+
+- Add an embedded Steam web accelerator with a saved switch and connectivity test. The app starts its own loopback HTTPS bridge, uses encrypted DNS and compatible TLS handshakes, and validates upstream certificate chains and original hostnames. No external proxy address is required.
+- Pin temporary certificates only within the app's source/login sessions. Do not modify Windows trust, hosts or system proxy settings; restore session networking and stop the bridge when disabled or exiting.
+- Add the Windows tray, close-to-background behavior, task-aware menu, bottom shortcut bar and taskbar download progress. Explicit exit and completion auto-exit terminate the app even with the tray enabled.
+- Verify redirects, Secure HttpOnly cookies and authenticated POST forwarding through the bridge. Preserve the existing Perfect World credential capture and encrypted storage flow.
+
 ## 1.2.8
 
 - Add independent settings for Windows login startup, downloading missing demos on app launch, and exiting after successful downloads.
