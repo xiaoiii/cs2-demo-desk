@@ -34,6 +34,12 @@ test('Manual download completion also triggers exit, but cancelled tasks do not'
  const f=fixture();f.state.settings.autoDownload=false;f.add('one','queued');f.a.track(['one']);f.a.tick();f.state.items[0].status='cancelled';f.a.tick();assert.equal(f.state.automation.phase,'attention');
  f.state.items[0].status='queued';f.a.track(['one']);f.state.items[0].status='completed';f.a.tick();f.advance(10001);f.a.tick();assert.equal(f.exits(),1);
 });
+test('Auto-extracted download waits for DEM readiness and extraction failure prevents exit',()=>{
+ const f=fixture();f.state.settings.autoDownload=false;f.add('one','completed',{extracting:true,files:[]});f.a.track(['one']);
+ f.a.tick();f.advance(11000);f.a.tick();assert.equal(f.exits(),0);assert.equal(f.state.automation.quitAt,0);
+ f.state.items[0].extracting=false;f.state.items[0].error='解压失败';f.a.tick();f.advance(11000);f.a.tick();assert.equal(f.exits(),0);assert.equal(f.state.automation.phase,'attention');
+ f.state.items[0].error='';f.state.items[0].files=['ready.dem'];f.a.tick();assert.equal(f.state.automation.phase,'countdown');f.advance(10001);f.a.tick();assert.equal(f.exits(),1);
+});
 test('Portable autostart registers the durable EXE, verifies OS state and removes by stable name',()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'demo-login-')),exe=path.join(dir,'Demo Desk.exe');fs.writeFileSync(exe,'fixture');
  try{

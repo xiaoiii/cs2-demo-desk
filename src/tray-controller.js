@@ -2,7 +2,7 @@ function createTrayController({Tray,Menu,icon,show,action,exit}) {
   const tray=new Tray(icon);let signature='',announced=false;
   tray.on('click',()=>show());
   function update(state){
-    const pending=state.items.filter(x=>['queued','resolving','connecting','downloading','paused'].includes(x.status));
+    const pending=state.items.filter(x=>x.extracting||['queued','resolving','connecting','downloading','paused'].includes(x.status));
     const paused=pending.filter(x=>x.status==='paused').length;
     const running=pending.filter(x=>x.status==='downloading').length;
     const countdown=state.automation?.phase==='countdown';

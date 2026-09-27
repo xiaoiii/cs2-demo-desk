@@ -121,9 +121,14 @@ function setupSession(ses) {
           record.kind = inspectFile(record.path);
           if (!record.kind) throw new Error('文件内容不是受支持的 Demo 或压缩包，可能是错误页面。');
           record.files = record.kind === 'dem' ? [record.path] : [];
+          record.error = '';
           record.completedAt = Date.now();
         } catch (e) { record.status = 'failed'; record.error = e.message; }
       } else if (status !== 'cancelled') record.error = '下载中断或链接已过期，请重试；如需登录，请在来源窗口直接下载。';
+      if (!quitting && record.status === 'completed' && record.category === 'personal' && record.kind === 'bz2') {
+        // extract() marks the record busy before yielding so completion auto-exit waits.
+        void extract(record).catch(error => { record.error = error.message; broadcast(); });
+      }
       broadcast(); pump();
     });
   });
@@ -231,23 +236,31 @@ async function openSource(url, category) {
 async function extract(record) {
   if (record.status !== 'completed' || !record.path || !fs.existsSync(record.path)) throw new Error('请先完成下载，或检查文件是否已被移动。');
   if (record.kind === 'dem') return record.files;
-  if (extracting.has(record.id)) return;
+  if (extracting.has(record.id)) return extracting.get(record.id).completion;
+  if (record.files?.length && !record.error && record.files.every(file => { try { return inspectFile(file) === 'dem'; } catch { return false; } })) return record.files;
   const destination = path.join(path.dirname(record.path), 'extracted', record.id);
   fs.mkdirSync(destination, { recursive: true });
+  // Failed attempts can contain truncated files with a valid DEM header. Never reuse them.
+  const attempt = fs.mkdtempSync(path.join(destination, 'unpack-'));
   const binary = app.isPackaged ? path.join(process.resourcesPath, '7zip', '7z.exe') : path.join(__dirname, '..', 'vendor', '7zip', '7z.exe');
-  record.extracting = true; record.error = ''; broadcast();
-  return new Promise((resolve, reject) => {
-    const args = ['e', record.path, `-o${destination}`, '-aou', '-y'];
+  record.extracting = true; record.error = ''; record.files = []; broadcast();
+  const completion = new Promise((resolve, reject) => {
+    const args = ['e', record.path, `-o${attempt}`, '-aou', '-y'];
     if (record.kind !== 'bz2') args.push('*.dem', '-r');
     const child = execFile(binary, args, { windowsHide: true, timeout: 15 * 60 * 1000, maxBuffer: 4 * 1024 * 1024 }, (error) => {
       extracting.delete(record.id); record.extracting = false;
-      const files = fs.readdirSync(destination).map(x => path.join(destination, x)).filter(x => fs.lstatSync(x).isFile() && !fs.lstatSync(x).isSymbolicLink());
-      record.files = files.filter(x => { try { return inspectFile(x) === 'dem'; } catch { return false; } });
-      if (error || !record.files.length) { record.error = error ? '解压失败：压缩包可能损坏、加密或不受支持。原文件已保留。' : '压缩包中没有有效的 .dem 文件。'; broadcast(); reject(new Error(record.error)); }
-      else { notice(`解压完成，找到 ${record.files.length} 个 Demo。`); resolve(record.files); }
+      try {
+        if (error) throw new Error(quitting ? '解压已中断，原压缩包已保留。重新打开后可点击解压重试。' : '解压失败：压缩包可能损坏、加密或不受支持，或磁盘空间不足。原文件已保留，可点击解压重试。');
+        const files = fs.readdirSync(attempt).map(x => path.join(attempt, x)).filter(x => fs.lstatSync(x).isFile() && !fs.lstatSync(x).isSymbolicLink());
+        record.files = files.filter(x => { try { return inspectFile(x) === 'dem'; } catch { return false; } });
+        if (!record.files.length) throw new Error('压缩包中没有有效的 .dem 文件。原文件已保留。');
+        notice(`解压完成，找到 ${record.files.length} 个 Demo，可直接一键播放。`); resolve(record.files);
+      } catch (failure) { record.files = []; record.error = failure.message; broadcast(); reject(new Error(record.error)); }
     });
     extracting.set(record.id, child);
   });
+  extracting.get(record.id).completion = completion;
+  return completion;
 }
 async function command(action, data = {}) {
   if(networkSaving && !['state','hide-to-tray','cancel-auto-quit'].includes(action))throw new Error('正在切换 Steam 加速，请稍候。');

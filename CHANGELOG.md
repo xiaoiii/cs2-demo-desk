@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.10
+
+- Automatically extract newly downloaded personal BZ2 demos, preserve the original archive and expose the resulting DEM for one-click playback.
+- Keep extraction visible as active work and wait for it before completion auto-exit. Preserve failed archives and allow manual extraction retries.
+- Coalesce simultaneous extraction requests, reuse valid completed results, isolate retry output from partial files, and handle output scanning failures without crashing.
+
 ## 1.2.9
 
 - Add an embedded Steam web accelerator with a saved switch and connectivity test. The app starts its own loopback HTTPS bridge, uses encrypted DNS and compatible TLS handshakes, and validates upstream certificate chains and original hostnames. No external proxy address is required.
