@@ -18,6 +18,9 @@ const { createDownloadAutomation } = require('./download-automation');
 const { createTrayController } = require('./tray-controller');
 const {normalizeNetwork,applyNetwork,testConnection,closeNetworks}=require('./steam-network');
 
+const { isDirectory, gameReplayDirectory, publishDemos } = require('./replay-output');
+let replayFolderPrompt;
+
 const testing = process.env.DEMODESK_TEST === '1';
 if (testing && process.env.DEMODESK_DATA) app.setPath('userData', process.env.DEMODESK_DATA);
 let win, sourceWin, sourceView, browserCategory = 'personal', sourceSession, stateFile, saveTimer, quitting = false, syncEngine, loader, vault, pwaStore, recoveryTimer, pwaSyncing = false;
@@ -120,12 +123,12 @@ function setupSession(ses) {
         try {
           record.kind = inspectFile(record.path);
           if (!record.kind) throw new Error('文件内容不是受支持的 Demo 或压缩包，可能是错误页面。');
-          record.files = record.kind === 'dem' ? [record.path] : [];
+          record.files = [];
           record.error = '';
           record.completedAt = Date.now();
         } catch (e) { record.status = 'failed'; record.error = e.message; }
       } else if (status !== 'cancelled') record.error = '下载中断或链接已过期，请重试；如需登录，请在来源窗口直接下载。';
-      if (!quitting && record.status === 'completed' && record.category === 'personal' && record.kind === 'bz2') {
+      if (!quitting && record.status === 'completed' && ['dem','bz2','zip','rar','7z'].includes(record.kind)) {
         // extract() marks the record busy before yielding so completion auto-exit waits.
         void extract(record).catch(error => { record.error = error.message; broadcast(); });
       }
@@ -233,34 +236,66 @@ async function openSource(url, category) {
   sourceView.webContents.loadURL(url).catch(e => browserState(`页面加载失败：${e.message}`));
   return true;
 }
+async function replayDirectory(choose = false) {
+  if (!choose && isDirectory(state.settings.replayDirectory)) return state.settings.replayDirectory;
+  if (replayFolderPrompt) return replayFolderPrompt;
+  replayFolderPrompt = (async () => {
+    if (!choose && !state.settings.replayDirectory) {
+      const steam = state.settings.steamPath || await detectSteam();
+      const found = gameReplayDirectory(state.settings.cs2InstallPath) || gameReplayDirectory(findInLibraries(steam ? [path.dirname(steam)] : []));
+      if (found) { state.settings.replayDirectory = found; broadcast(); return found; }
+    }
+    showMain();
+    const result = await dialog.showOpenDialog(win, { title: '选择 Demo 录像目录（建议 CS2 的 game/csgo/replays）', defaultPath: state.settings.replayDirectory || state.settings.directory, properties: ['openDirectory', 'createDirectory'] });
+    if (result.canceled || !isDirectory(result.filePaths[0])) throw new Error('尚未选择录像目录。下载文件已保留，请在设置中选择目录后点击重试保存。');
+    state.settings.replayDirectory = result.filePaths[0]; persist(); broadcast(); return result.filePaths[0];
+  })();
+  try { return await replayFolderPrompt; } finally { replayFolderPrompt = null; }
+}
 async function extract(record) {
   if (record.status !== 'completed' || !record.path || !fs.existsSync(record.path)) throw new Error('请先完成下载，或检查文件是否已被移动。');
-  if (record.kind === 'dem') return record.files;
   if (extracting.has(record.id)) return extracting.get(record.id).completion;
   if (record.files?.length && !record.error && record.files.every(file => { try { return inspectFile(file) === 'dem'; } catch { return false; } })) return record.files;
-  const destination = path.join(path.dirname(record.path), 'extracted', record.id);
-  fs.mkdirSync(destination, { recursive: true });
-  // Failed attempts can contain truncated files with a valid DEM header. Never reuse them.
-  const attempt = fs.mkdtempSync(path.join(destination, 'unpack-'));
-  const binary = app.isPackaged ? path.join(process.resourcesPath, '7zip', '7z.exe') : path.join(__dirname, '..', 'vendor', '7zip', '7z.exe');
+  const job = { child: null, kill() { this.child?.kill(); } };
+  extracting.set(record.id, job);
   record.extracting = true; record.error = ''; record.files = []; broadcast();
-  const completion = new Promise((resolve, reject) => {
-    const args = ['e', record.path, `-o${attempt}`, '-aou', '-y'];
-    if (record.kind !== 'bz2') args.push('*.dem', '-r');
-    const child = execFile(binary, args, { windowsHide: true, timeout: 15 * 60 * 1000, maxBuffer: 4 * 1024 * 1024 }, (error) => {
-      extracting.delete(record.id); record.extracting = false;
-      try {
-        if (error) throw new Error(quitting ? '解压已中断，原压缩包已保留。重新打开后可点击解压重试。' : '解压失败：压缩包可能损坏、加密或不受支持，或磁盘空间不足。原文件已保留，可点击解压重试。');
-        const files = fs.readdirSync(attempt).map(x => path.join(attempt, x)).filter(x => fs.lstatSync(x).isFile() && !fs.lstatSync(x).isSymbolicLink());
-        record.files = files.filter(x => { try { return inspectFile(x) === 'dem'; } catch { return false; } });
-        if (!record.files.length) throw new Error('压缩包中没有有效的 .dem 文件。原文件已保留。');
-        notice(`解压完成，找到 ${record.files.length} 个 Demo，可直接一键播放。`); resolve(record.files);
-      } catch (failure) { record.files = []; record.error = failure.message; broadcast(); reject(new Error(record.error)); }
-    });
-    extracting.set(record.id, child);
-  });
-  extracting.get(record.id).completion = completion;
-  return completion;
+  job.completion = (async () => {
+    let attempt;
+    try {
+      const destination = await replayDirectory();
+      job.ready = true;
+      if (quitting) throw new Error('保存已中断，原文件已保留。');
+      let files = [record.path];
+      if (record.kind !== 'dem') {
+        // Fresh staging prevents a truncated DEM from a failed attempt being reused.
+        const staging = path.join(app.getPath('userData'), 'extraction');
+        fs.mkdirSync(staging, { recursive: true });
+        attempt = fs.mkdtempSync(path.join(staging, 'unpack-'));
+        const binary = app.isPackaged ? path.join(process.resourcesPath, '7zip', '7z.exe') : path.join(__dirname, '..', 'vendor', '7zip', '7z.exe');
+        await new Promise((resolve, reject) => {
+          const args = ['e', record.path, '-o' + attempt, '-aou', '-y'];
+          if (record.kind !== 'bz2') args.push('*.dem', '-r');
+          job.child = execFile(binary, args, { windowsHide: true, timeout: 15 * 60 * 1000, maxBuffer: 4 * 1024 * 1024 }, error => error ? reject(new Error('解压失败：压缩包可能损坏、加密或磁盘空间不足。原文件已保留，可重试。')) : resolve());
+        });
+        files = fs.readdirSync(attempt).map(x => path.join(attempt, x)).filter(x => {
+          try { return fs.lstatSync(x).isFile() && !fs.lstatSync(x).isSymbolicLink() && inspectFile(x) === 'dem'; } catch { return false; }
+        });
+        if (!files.length) throw new Error('压缩包中没有有效的 .dem 文件。原文件已保留。');
+      }
+      if (quitting) throw new Error('保存已中断，原文件已保留。');
+      record.files = await publishDemos(files, destination);
+      notice('已保存 ' + record.files.length + ' 个 DEM 到录像目录，可直接一键播放。');
+      return record.files;
+    } catch (error) { record.files = []; record.error = error.message; throw error; }
+    finally {
+      // Delete only this operation's generated staging files, without recursive deletion.
+      if (attempt) {
+        try { for (const entry of fs.readdirSync(attempt, { withFileTypes: true })) if (entry.isFile() || entry.isSymbolicLink()) fs.unlinkSync(path.join(attempt, entry.name)); fs.rmdirSync(attempt); } catch {}
+      }
+      record.extracting = false; extracting.delete(record.id); broadcast();
+    }
+  })();
+  return job.completion;
 }
 async function command(action, data = {}) {
   if(networkSaving && !['state','hide-to-tray','cancel-auto-quit'].includes(action))throw new Error('正在切换 Steam 加速，请稍候。');
@@ -372,6 +407,8 @@ async function command(action, data = {}) {
       if (active.has(data.id) || pending.has(data.id) || resolvingDownloads.has(data.id) || r?.extracting || r?.status === 'queued') throw new Error('请先取消下载再移除。');
       state.items = state.items.filter(x => x.id !== data.id); broadcast(); return;
     }
+    case 'replay-folder': return replayDirectory(true);
+    case 'open-replay-folder': { const folder = await replayDirectory(); const error = await shell.openPath(folder); if (error) throw new Error(error); return; }
     case 'folder': {
       const result = await dialog.showOpenDialog(win, { title: '选择 Demo 保存位置', defaultPath: state.settings.directory, properties: ['openDirectory', 'createDirectory'] });
       if (!result.canceled) { state.settings.directory = result.filePaths[0]; broadcast(); } return;
@@ -387,7 +424,7 @@ async function command(action, data = {}) {
       const record = state.items.find(item => item.id === data.id);
       if (!record || record.status !== 'completed') throw new Error('请先完成 Demo 下载。');
       if (await isCs2Running()) throw new Error('CS2 已在运行。请先退出游戏，再点一键播放；Steam 重新启动游戏后会自动载入录像，无需输入控制台命令。');
-      if (!record.files?.length) await extract(record);
+      if (record.extracting || !record.files?.length) await extract(record);
       const filename = record.files?.[Number(data.index) || 0];
       if (!filename) throw new Error('未找到可播放的 Demo。');
       let executable = state.settings.steamPath || await detectSteam();
@@ -444,6 +481,7 @@ app.whenReady().then(async () => {
     if (fs.existsSync(stateFile)) {
       const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
       if (Array.isArray(saved.items)) state.items = saved.items.filter(x => x && typeof x.id === 'string' && typeof x.url === 'string');
+      if (typeof saved.settings?.replayDirectory === 'string') state.settings.replayDirectory = saved.settings.replayDirectory;
       if (typeof saved.settings?.directory === 'string') state.settings.directory = saved.settings.directory;
       state.settings.concurrency = Math.min(4, Math.max(1, Number(saved.settings?.concurrency) || 2));
       state.settings.historyDays = clampDays(saved.settings?.historyDays);
@@ -461,6 +499,13 @@ app.whenReady().then(async () => {
       for (const r of state.items) { if (['queued','connecting','downloading','paused','interrupted','resolving'].includes(r.status)) { r.status = 'interrupted'; r.error = '上次退出时下载未完成。点击重试将重新下载。'; } r.extracting = false; r.speed = 0; }
     }
   } catch { state.notice = '历史记录读取失败，已启动空白列表。原记录保留在用户数据目录。'; stateFile = path.join(app.getPath('userData'), `library-recovered-${Date.now()}.json`); }
+  if (testing && !state.settings.replayDirectory) {
+    state.settings.replayDirectory = path.join(app.getPath('userData'), 'replays');
+    fs.mkdirSync(state.settings.replayDirectory, { recursive: true });
+  } else if (!state.settings.replayDirectory) {
+    const steam = state.settings.steamPath || await detectSteam();
+    state.settings.replayDirectory = gameReplayDirectory(state.settings.cs2InstallPath) || gameReplayDirectory(findInLibraries(steam ? [path.dirname(steam)] : []));
+  }
   sourceSession = session.fromPartition('persist:demo-sources'); setupSession(sourceSession);
   state.settings.steamNetwork=normalizeNetwork(state.settings.steamNetwork);
   try {await applyNetwork(sourceSession,state.settings.steamNetwork);}
@@ -540,7 +585,7 @@ app.whenReady().then(async () => {
     for (const child of extracting.values()) child.kill();
     sourceWin?.close(); clearTimeout(saveTimer); persist();
     vault.stop();
-    Promise.resolve(vault.save()).catch(() => {}).then(()=>closeNetworks()).catch(()=>{}).finally(() => { clearTimeout(saveTimer); persist(); trayController?.destroy();trayController=null;win.destroy(); app.quit(); });
+    Promise.allSettled([vault.save(), ...[...extracting.values()].filter(job => job.ready).map(job => job.completion)]).then(()=>closeNetworks()).catch(()=>{}).finally(() => { clearTimeout(saveTimer); persist(); trayController?.destroy();trayController=null;win.destroy(); app.quit(); });
   });
 });
 app.on('window-all-closed', () => app.quit());

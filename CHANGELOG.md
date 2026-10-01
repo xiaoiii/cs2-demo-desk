@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.11
+
+- Automatically extract supported downloads from all sources into CS2 game/csgo/replays; save direct DEM downloads there too.
+- Detect existing replay directories through Steam libraries, request a folder when unavailable, and persist the selected destination. Add replay folder settings and shortcuts.
+- Preserve source downloads and existing replays, use exclusive collision-safe output names, retain failures for retry, and wait for output saving before automatic exit.
+
 ## 1.2.10
 
 - Automatically extract newly downloaded personal BZ2 demos, preserve the original archive and expose the resulting DEM for one-click playback.

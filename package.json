@@ -1,14 +1,14 @@
 {
   "name": "cs2-demo-desk",
   "productName": "CS2 Demo Desk",
-  "version": "1.2.10",
+  "version": "1.2.11",
   "description": "CS2 personal and tournament demo download manager for Windows",
   "author": "Demo Desk",
   "license": "MIT",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test tests/core.test.js tests/sync-engine.test.cjs tests/session-vault.test.cjs tests/source-parsers.test.cjs tests/pwa-client.test.cjs tests/secret-store.test.cjs tests/replay-controls.test.cjs tests/playback.test.cjs tests/pwa-login.test.cjs tests/download-automation.test.cjs tests/tray.test.cjs tests/steam-network.test.cjs",
+    "test": "node --test tests/replay-output.test.cjs tests/core.test.js tests/sync-engine.test.cjs tests/session-vault.test.cjs tests/source-parsers.test.cjs tests/pwa-client.test.cjs tests/secret-store.test.cjs tests/replay-controls.test.cjs tests/playback.test.cjs tests/pwa-login.test.cjs tests/download-automation.test.cjs tests/tray.test.cjs tests/steam-network.test.cjs",
     "test:pwa-login": "node tests/pwa-login-desktop.cjs",
     "test:desktop": "node tests/desktop.cjs",
     "test:auto": "node tests/auto-desktop.cjs",
