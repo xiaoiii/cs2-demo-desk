@@ -5,3 +5,12 @@ test-results/
 steam-session.bin
 pwa-credentials.bin
 library.json
+insight/
+vendor/insight-python/
+src/insight-*.js
+src/insight-*.css
+scripts/stage-insight-python.ps1
+docs/insight-integration.md
+tests/insight-*.cjs
+__pycache__/
+*.pyc

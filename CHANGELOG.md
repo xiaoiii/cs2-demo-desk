@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0 — 独立复盘工作室与 Windows 安装版
+
+- 交付改为 NSIS 安装程序，可选择安装目录、建立快捷方式并从 Windows 卸载，沿用现有用户资料。
+- 独立实现 DEM 玩家战绩、关键回合分析、坐标回放、OBS POV 录制、剪辑项目与 AI 点评/选片；没有引入 Insight 原源码或运行时。
+- 视频剪辑支持排序、裁剪、速度、音量、中文标题、色调与淡入淡出；内置视频工具导出 MP4。
+- AI 选片可进入录制队列，并将对应完整录制素材按选片顺序生成剪辑项目。
+- 高级 DEM 外观/资源重写尚未实现；真实 OBS 与 CS2 联录未作现场验证。
+
 ## 1.2.11
 
 - Automatically extract supported downloads from all sources into CS2 game/csgo/replays; save direct DEM downloads there too.

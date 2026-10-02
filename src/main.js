@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog, shell, clipboard, Menu, Tray, safeStorage } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog, shell, clipboard, Menu, Tray, safeStorage, utilityProcess } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -10,13 +10,20 @@ const { createSourceLoader } = require('./source-loader');
 const { createSessionVault } = require('./session-vault');
 const { createSecretStore } = require('./secret-store');
 const { createPwaLogin } = require('./pwa-login');
-const { detectSteam, findInLibraries, isCs2Running, preparePlayback, cleanupPlayback, launchPlayback } = require('./playback');
+const { detectSteam, findInLibraries, isCs2Running, preparePlayback, cleanupPlayback, launchPlayback, stageFiles } = require('./playback');
 const { validateSteamId, validateToken, fetchRecentMatches, createDemoDownload } = require('./pwa-client');
 const { extractSourcePage } = require('./source-parsers');
 const { normalizeOptions, getAutoLaunch, setAutoLaunch } = require('./startup-settings');
 const { createDownloadAutomation } = require('./download-automation');
 const { createTrayController } = require('./tray-controller');
 const {normalizeNetwork,applyNetwork,testConnection,closeNetworks}=require('./steam-network');
+const {createReviewService}=require('./review-service');
+const {createObs,obsAddress}=require('./studio-obs');
+const {createRecording,gameCommand,playerCommand}=require('./studio-recording');
+const {createEditor}=require('./studio-editor');
+const {createStudioSecrets}=require('./studio-secrets');
+const {reviewWithAI,endpoint:aiEndpoint}=require('./studio-ai');
+const {promisify}=require('node:util');
 
 const { isDirectory, gameReplayDirectory, publishDemos } = require('./replay-output');
 let replayFolderPrompt;
@@ -30,6 +37,26 @@ let playbackBusy = false;
 let automation, automationTimer, startupPending = true;
 let trayController, exitRequested=false;
 let networkTesting=false,networkSaving=false;
+let reviews,studioObs,studioRecording,studioEditor,studioSecrets,ffmpeg,studioRecordingBusy=false,studioRecordingPromise,studioExportPromise;
+const studioSettings=()=>state.settings.studio||{};
+async function playbackLocations(){
+  let steam=state.settings.steamPath||await detectSteam();
+  if(!steam||!fs.existsSync(steam)){const result=await dialog.showOpenDialog(win,{title:'选择 steam.exe',properties:['openFile'],filters:[{name:'Steam',extensions:['exe']}]});if(result.canceled)throw new Error('已取消选择 Steam。');steam=result.filePaths[0];}
+  if(path.basename(steam).toLowerCase()!=='steam.exe')throw new Error('请选择 Steam 安装目录中的 steam.exe。');
+  let game=findInLibraries([path.dirname(steam)])||state.settings.cs2InstallPath;
+  if(!game||!fs.existsSync(game)){const result=await dialog.showOpenDialog(win,{title:'定位 CS2 的 game/bin/win64/cs2.exe',properties:['openFile'],filters:[{name:'CS2',extensions:['exe']}]});if(result.canceled)throw new Error('已取消选择游戏目录。');game=result.filePaths[0];}
+  if(path.basename(game).toLowerCase()!=='cs2.exe')throw new Error('请选择 CS2 安装目录中的 cs2.exe。');
+  Object.assign(state.settings,{steamPath:steam,cs2InstallPath:game});persist();return {steam,game};
+}
+async function launchStudioDemo(row){
+  if(await isCs2Running())throw new Error('请先退出 CS2，再由 Steam 载入所选录像。');
+  const {steam,game}=await playbackLocations();await cleanupPlayback(state.settings.playbackStage,game);
+  const stage=await preparePlayback(game,row.path,state.settings.replayControls,studioSettings());state.settings.playbackStage=stage;persist();await launchPlayback(steam,stage);return stage;
+}
+async function videoInfo(filename){
+  let text='';try{const r=await promisify(execFile)(ffmpeg,['-hide_banner','-i',filename],{windowsHide:true,timeout:15000,maxBuffer:200000});text=r.stderr;}catch(error){text=error.stderr||'';}
+  const match=text.match(/Duration: (\d+):(\d+):(\d+(?:\.\d+)?)/);if(!match)throw new Error('无法读取视频时长，请检查素材文件。');return {path:filename,name:path.basename(filename),duration:Number(match[1])*3600+Number(match[2])*60+Number(match[3]),preview:pathToFileURL(filename).href,noAudio:!text.includes('Audio:')};
+}
 function showMain(page){if(!win||win.isDestroyed())return;if(win.isMinimized())win.restore();win.show();win.focus();if(page)win.webContents.send('desk:navigate',page);}
 function requestExit(){if(quitting)return;exitRequested=true;if(win&&!win.isDestroyed())win.close();}
 let state = { items: [], settings: { directory: '', concurrency: 2, historyDays: 7, tournamentDays: 7, perfectDays: 7, autoSync: true }, sync: { personal: { phase:'idle', message:'登录 Steam 后自动获取最近一周官匹记录。', lastSync:0, found:0 }, perfect: { phase:'login_required', message:'登录完美平台后自动获取 Demo。', lastSync:0, found:0 }, tournament: { phase:'idle', message:'将自动获取最近一周赛事并分类。', lastSync:0, found:0 } }, auth: { steamSaved: false, pwaSaved:false, encryptionAvailable: false, error: '' }, notice: '', version: app.getVersion() };
@@ -300,6 +327,41 @@ async function extract(record) {
 async function command(action, data = {}) {
   if(networkSaving && !['state','hide-to-tray','cancel-auto-quit'].includes(action))throw new Error('正在切换 Steam 加速，请稍候。');
   switch (action) {
+    case 'studio-state': return {library:reviews.list(),recording:studioRecording.status(),editor:studioEditor.list(),settings:studioSettings(),secrets:studioSecrets.status()};
+    case 'review-scan': return reviews.scan(await replayDirectory());
+    case 'review-players': return reviews.players(data.id);
+    case 'review-analyze': return reviews.analyze(data.id,data.playerId);
+    case 'review-radar': return reviews.radar(data.id,data.tick,data.endTick);
+    case 'review-open-record': {
+      const record=state.items.find(x=>x.id===data.id&&x.status==='completed');if(!record)throw new Error('请先完成 Demo 下载。');if(!record.files?.length)await extract(record);
+      const filename=record.files?.[Math.max(0,Number(data.index)||0)];if(!filename)throw new Error('未找到 DEM 文件。');const row=reviews.add(filename);return {record:row,meta:await reviews.players(row.id)};
+    }
+    case 'review-open-file': {const result=await dialog.showOpenDialog(win,{title:'选择 DEM 文件',properties:['openFile'],filters:[{name:'CS2 Demo',extensions:['dem']}]});if(result.canceled)return null;const row=reviews.add(result.filePaths[0]);return {record:row,meta:await reviews.players(row.id)};}
+    case 'review-play': {const row=reviews.get(data.id);if(studioRecordingBusy)throw new Error('请先结束录制。');await launchStudioDemo(row);return true;}
+    case 'review-play-clip': {
+      if(studioRecordingBusy)throw new Error('请先结束录制。');const analysis=await reviews.analyze(data.id,data.playerId),clip=analysis.clips.find(x=>x.id===data.clipId);if(!clip)throw new Error('片段已失效，请重新分析。');await launchStudioDemo(reviews.get(data.id));notice('录像已由 Steam 启动，载入后可在回放面板跳到目标 Tick。');return {tick:clip.startTick};
+    }
+    case 'studio-obs-status': return studioObs.status();
+    case 'studio-settings': {
+      if(studioRecordingBusy)throw new Error('录制进行中，不能修改连接。');const current=studioSettings();const next={obsAddress:obsAddress(data.obsAddress||current.obsAddress),obsScene:String(data.obsScene??current.obsScene??'').slice(0,200),aiBase:String(data.aiBase??current.aiBase??'').trim(),aiModel:String(data.aiModel??current.aiModel??'').trim().slice(0,200),xray:data.xray!==false,cleanHud:data.cleanHud===true};if(next.aiBase)aiEndpoint(next.aiBase);
+      const values={};for(const [input,key]of [['obsPassword','obsPassword'],['aiKey','aiKey']])if(typeof data[input]==='string'&&data[input])values[key]=data[input];if(data.clearSecrets===true){values.obsPassword='';values.aiKey='';}if(Object.keys(values).length)studioSecrets.save(values);
+      state.settings.studio=next;await studioObs.close();persist();return studioSecrets.status();
+    }
+    case 'studio-record': {
+      if(studioRecordingBusy)throw new Error('已有录制任务。');const analysis=await reviews.analyze(data.id,data.playerId);const ids=[...new Set(Array.isArray(data.clipIds)?data.clipIds:[])];const available=new Map(analysis.clips.map(x=>[x.id,x]));let segments=ids.filter(id=>available.has(id)).map(id=>available.get(id));if(data.whole===true)segments=[{label:'整场个人 POV',startTick:Math.min(...analysis.clips.filter(x=>x.kind==='round').map(x=>x.startTick)),endTick:analysis.meta.endTick}];if(!segments.length)throw new Error('请选择录制片段。');if((await studioObs.status()).recording)throw new Error('OBS 已在录制。');await playbackLocations();studioRecordingBusy=true;studioRecordingPromise=studioRecording.execute({demo:reviews.get(data.id),player:analysis.player,segments,scene:studioSettings().obsScene}).catch(error=>notice(error.message)).finally(()=>{studioRecordingBusy=false;});return true;
+    }
+    case 'studio-record-cancel': studioRecording.cancel();return true;
+    case 'studio-ai': return reviewWithAI({settings:studioSettings(),key:studioSecrets.get().aiKey,analysis:await reviews.analyze(data.id,data.playerId)});
+    case 'studio-auto-project': {
+      const analysis=await reviews.analyze(data.id,data.playerId),valid=new Set(analysis.clips.map(x=>x.id));const ids=[...new Set(Array.isArray(data.clipIds)?data.clipIds:[])].filter(x=>valid.has(x));const recorded=studioRecording.status().clips.filter(x=>x.reviewId===data.id&&x.playerId===data.playerId&&x.complete);const segments=[];
+      for(const id of ids){const clip=recorded.find(x=>x.sourceClipId===id);if(clip&&fs.existsSync(clip.path)){const video=await videoInfo(clip.path);segments.push({path:clip.path,start:0,end:video.duration,speed:1,volume:1,title:clip.name,fade:true,noAudio:video.noAudio});}}
+      if(!segments.length)throw new Error('没有对应的完整录制素材，请先录制所选片段。');return studioEditor.save({name:`${analysis.player.name} 精彩集锦`,segments});
+    }
+    case 'studio-video-import': {const result=await dialog.showOpenDialog(win,{title:'添加剪辑素材',properties:['openFile','multiSelections'],filters:[{name:'视频',extensions:['mp4','mkv','mov','avi','webm']}]});return result.canceled?[]:Promise.all(result.filePaths.slice(0,20).map(videoInfo));}
+    case 'studio-video-recorded': {const clip=studioRecording.status().clips.find(x=>x.id===data.id);if(!clip||!fs.existsSync(clip.path))throw new Error('录制素材不存在。');return videoInfo(clip.path);}
+    case 'studio-project-save': return studioEditor.save(data);
+    case 'studio-project-export': {const result=await dialog.showSaveDialog(win,{title:'导出 MP4',defaultPath:path.join(app.getPath('videos'),`Demo-Desk-${Date.now()}.mp4`),filters:[{name:'MP4',extensions:['mp4']}]});if(result.canceled)return false;studioExportPromise=studioEditor.exportProject(data.id,result.filePath).catch(error=>notice(error.message));return true;}
+    case 'studio-export-cancel': studioEditor.cancel();return true;
     case 'steam-network-save': {
       const next=normalizeNetwork(data);
       if(networkSaving||active.size||pending.size||resolvingDownloads.size||pwaSyncing||syncEngine.isRunning('personal')||syncEngine.isRunning('tournament')||BrowserWindow.getAllWindows().length>1)throw new Error('请等待下载或获取结束，并关闭来源 / 登录窗口后再修改网络设置。');
@@ -418,6 +480,7 @@ async function command(action, data = {}) {
     case 'reveal': { const r = state.items.find(x => x.id === data.id); const p = r?.files?.[0] || r?.path; if (!p || !fs.existsSync(p)) throw new Error('文件不存在，可能已被移动。'); shell.showItemInFolder(p); return; }
     case 'extract': { const r = state.items.find(x => x.id === data.id); if (!r) throw new Error('找不到该记录。'); return extract(r); }
     case 'play-demo': {
+      if(studioRecordingBusy)throw new Error('请先结束工作室录制。');
       if (playbackBusy) throw new Error('正在准备回放，请稍候。');
       playbackBusy = true;
       try {
@@ -489,6 +552,7 @@ app.whenReady().then(async () => {
       state.settings.perfectDays = clampDays(saved.settings?.perfectDays);
       if (typeof saved.settings?.steamPath === 'string') state.settings.steamPath = saved.settings.steamPath;
       if (typeof saved.settings?.cs2InstallPath === 'string') state.settings.cs2InstallPath = saved.settings.cs2InstallPath;
+      if(saved.settings?.studio&&typeof saved.settings.studio==='object')state.settings.studio=saved.settings.studio;
       try { state.settings.replayControls = require('./replay-controls').normalize(saved.settings?.replayControls); } catch { state.settings.replayControls = require('./replay-controls').defaults(); }
       if (saved.settings?.playbackStage && typeof saved.settings.playbackStage.gameExe === 'string' && typeof saved.settings.playbackStage.id === 'string') state.settings.playbackStage = saved.settings.playbackStage;
       state.settings.autoSync = saved.settings?.autoSync !== false;
@@ -507,6 +571,14 @@ app.whenReady().then(async () => {
     state.settings.replayDirectory = gameReplayDirectory(state.settings.cs2InstallPath) || gameReplayDirectory(findInLibraries(steam ? [path.dirname(steam)] : []));
   }
   sourceSession = session.fromPartition('persist:demo-sources'); setupSession(sourceSession);
+  const studioDirectory=path.join(app.getPath('userData'),'studio');fs.mkdirSync(studioDirectory,{recursive:true});
+  reviews=createReviewService({directory:studioDirectory,workerFactory:(file,options)=>{
+    const child=utilityProcess.fork(file.replace('app.asar','app.asar.unpacked'),[],{serviceName:'Demo Desk DEM Parser',stdio:'ignore'});
+    child.once('spawn',()=>child.postMessage(options.workerData));child.terminate=async()=>{child.kill();};return child;
+  }});studioSecrets=createStudioSecrets({filename:path.join(studioDirectory,'connections.bin'),safeStorage});
+  studioObs=createObs({settings:studioSettings,secrets:studioSecrets.get});
+  studioRecording=createRecording({obs:studioObs,launch:launchStudioDemo,gameExe:()=>state.settings.cs2InstallPath,directory:studioDirectory});
+  ffmpeg=app.isPackaged?path.join(process.resourcesPath,'ffmpeg','ffmpeg.exe'):require('ffmpeg-static');studioEditor=createEditor({directory:studioDirectory,ffmpeg});
   state.settings.steamNetwork=normalizeNetwork(state.settings.steamNetwork);
   try {await applyNetwork(sourceSession,state.settings.steamNetwork);}
   catch {state.settings.steamNetwork={enabled:false};state.notice='内置 Steam 加速启动失败，已恢复普通连接。可在设置中重新开启。';}
@@ -555,7 +627,7 @@ app.whenReady().then(async () => {
     catch {notice('托盘图标创建失败，关闭窗口时将退出软件。');}
   }
   automation = createDownloadAutomation({state,queue:ids=>{void command('queue',{ids});},
-    isBusy:()=>startupPending||networkTesting||networkSaving||active.size||pending.size||extracting.size||resolvingDownloads.size||playbackBusy||pwaSyncing||Boolean(sourceWin&&!sourceWin.isDestroyed())||BrowserWindow.getAllWindows().length>1,
+    isBusy:()=>startupPending||networkTesting||networkSaving||reviews.busy||studioRecordingBusy||studioEditor.busy||active.size||pending.size||extracting.size||resolvingDownloads.size||playbackBusy||pwaSyncing||Boolean(sourceWin&&!sourceWin.isDestroyed())||BrowserWindow.getAllWindows().length>1,
     quit:requestExit,onChange:()=>broadcast(false)});
   automationTimer=setInterval(()=>{if(!quitting)automation.tick();},500);
   win.webContents.once('did-finish-load', () => {
@@ -576,7 +648,7 @@ app.whenReady().then(async () => {
   win.on('close', event => {
     if (quitting) return;
     if(trayController&&!exitRequested){event.preventDefault();win.hide();trayController.announce();return;}
-    if (!testing && (active.size || pending.size || extracting.size || resolvingDownloads.size)) {
+    if (!testing && (active.size || pending.size || extracting.size || resolvingDownloads.size || reviews.busy || studioRecordingBusy || studioEditor.busy)) {
       const answer = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['继续下载', '退出软件'], defaultId: 0, cancelId: 0, title: '仍有任务进行中', message: '退出会中断下载或解压。重新打开后，可手动重试下载。' });
       if (answer === 0) { exitRequested=false;event.preventDefault(); return; }
     }
@@ -585,7 +657,8 @@ app.whenReady().then(async () => {
     for (const child of extracting.values()) child.kill();
     sourceWin?.close(); clearTimeout(saveTimer); persist();
     vault.stop();
-    Promise.allSettled([vault.save(), ...[...extracting.values()].filter(job => job.ready).map(job => job.completion)]).then(()=>closeNetworks()).catch(()=>{}).finally(() => { clearTimeout(saveTimer); persist(); trayController?.destroy();trayController=null;win.destroy(); app.quit(); });
+    studioRecording.cancel();studioEditor.cancel();
+    Promise.allSettled([vault.save(),reviews.stop(),studioRecordingPromise,studioExportPromise,studioObs.close(), ...[...extracting.values()].filter(job => job.ready).map(job => job.completion)]).then(()=>closeNetworks()).catch(()=>{}).finally(() => { clearTimeout(saveTimer); persist(); trayController?.destroy();trayController=null;win.destroy(); app.quit(); });
   });
 });
 app.on('window-all-closed', () => app.quit());

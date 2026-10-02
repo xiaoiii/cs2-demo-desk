@@ -1,5 +1,9 @@
 # Third-party notices
 
+The independent review engine uses @laihoe/demoparser2 0.42.0 (MIT), from https://github.com/LaihoE/demoparser at commit 8854783c788bf7308f583b8a8c29cb656101459a. Its original MIT notice is included under resources/licenses. OBS WebSocket integration uses obs-websocket-js 5.0.8 (MIT), Copyright (c) 2016 Brendan Hagan; its notice is also included under resources/licenses.
+
+Video export invokes a separate, unmodified, replaceable FFmpeg 6.1.1 executable distributed by ffmpeg-static 5.3.0. FFmpeg is licensed under GPL v3; its full license and distributor build/dependency information are included under resources/ffmpeg. The FFmpeg source revision is https://github.com/FFmpeg/FFmpeg/tree/e38092ef93 and source downloads are available at https://ffmpeg.org/download.html and https://www.gyan.dev/ffmpeg/builds/. FFmpeg is a separate executable, not linked into Demo Desk. The MIT license of this repository does not cover the FFmpeg binary.
+
 This application uses Electron (MIT), Chromium and Node.js. Their license notices accompany the Windows application.
 
 This application includes unmodified 7-Zip 25.01 binaries (7z.exe and 7z.dll), Copyright (C) 1999–2025 Igor Pavlov. 7-Zip is licensed under GNU LGPL with BSD portions and the unRAR restriction. The full license is included at resources/7zip/License.txt. Source code and project information are available at https://www.7-zip.org/ and https://github.com/ip7z/7zip/tree/25.01 . The executable and DLL are separate, replaceable files. No 7-Zip sources were modified.

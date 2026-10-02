@@ -12,7 +12,7 @@ function stageFiles(gameExe, id) {
   const name = `demodesk_${id}`;
   return { gameDir, name, demo:path.join(gameDir,`${name}.dem`), cfg:path.join(gameDir,'cfg',`${name}.cfg`), log:path.join(gameDir,`${name}.log`) };
 }
-async function preparePlayback(gameExe, source, controls) {
+async function preparePlayback(gameExe, source, controls, appearance) {
   if (!path.isAbsolute(source) || !fs.existsSync(source) || inspectFile(source) !== 'dem') throw new Error('找不到有效的 DEM 文件，请先下载或解压。');
   if (!fs.existsSync(gameExe)) throw new Error('找不到 CS2 安装目录。');
   const stage = { gameExe:path.resolve(gameExe), id:randomUUID().replace(/-/g,'') };
@@ -23,7 +23,8 @@ async function preparePlayback(gameExe, source, controls) {
   const owned = [];
   try {
     await fs.promises.copyFile(source,files.demo,fs.constants.COPYFILE_EXCL); owned.push(files.demo);
-    const script = `echo DEMODESK_PLAY_${stage.id}\n${controls?.enabled ? 'exec demodesk_controls\n' : ''}playdemo "${files.name}.dem"\ndemoui true\n`;
+    const visual=appearance?`spec_show_xray ${appearance.xray===false?0:1}\ncl_draw_only_deathnotices ${appearance.cleanHud===true?1:0}\n`:'';
+    const script = `echo DEMODESK_PLAY_${stage.id}\n${visual}${controls?.enabled ? 'exec demodesk_controls\n' : ''}playdemo "${files.name}.dem"\ndemoui true\n${appearance?'hideconsole\n':''}`;
     await fs.promises.writeFile(files.cfg,script,{encoding:'ascii',flag:'wx'}); owned.push(files.cfg);
     return stage;
   } catch {
