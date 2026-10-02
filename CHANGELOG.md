@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.1
+
+- Read local CS2 VPK radar textures and overview coordinates; add map layers and player headings with a coordinate-grid fallback.
+- Independently parse real DEM voice messages, including compressed frames, to display activity timelines and transparent OBS HUD previews. Audio decoding, transcription and live game synchronization are not included.
+- Require execution acknowledgements and confirmed starting/ending game ticks for recording. Start OBS before advancing playback; preserve partial clips on wrong POV, missing GSI, seeks, early pauses and cancellation.
+- Preserve OBS capture ownership after stop failures, clean only unchanged owned GSI files, and pin/verify the generic Source2Viewer texture decoder.
+
 ## 1.3.0 — 独立复盘工作室与 Windows 安装版
 
 - 交付改为 NSIS 安装程序，可选择安装目录、建立快捷方式并从 Windows 卸载，沿用现有用户资料。

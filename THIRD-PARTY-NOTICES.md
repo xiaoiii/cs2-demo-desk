@@ -42,3 +42,9 @@ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
 ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+## Source 2 texture decoder (1.3.1)
+
+The Windows installer includes the unmodified generic Source2Viewer CLI 20.0 from [ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat/releases/tag/20.0), distributed under MIT. Archive SHA-256: `d32ab327b8bbb42a2528866afb03bb582bdb779d0005488da32b90292afd3ff5`. The decoder reads local game radar textures; no extracted Valve game textures are distributed.
+
+The upstream copyright and third-party notices are included in `resources/licenses/source2-LICENSE` and `resources/licenses/source2-THIRD_PARTY_NOTICES.txt`. CLI source and dependency references are available from the linked release repository. Powered by [Source 2 Viewer](https://s2v.app) ([ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat)).

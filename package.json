@@ -1,19 +1,20 @@
 {
   "name": "cs2-demo-desk",
   "productName": "CS2 Demo Desk",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "CS2 personal and tournament demo download manager for Windows",
   "author": "Demo Desk",
   "license": "MIT",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test tests/replay-output.test.cjs tests/core.test.js tests/sync-engine.test.cjs tests/session-vault.test.cjs tests/source-parsers.test.cjs tests/pwa-client.test.cjs tests/secret-store.test.cjs tests/replay-controls.test.cjs tests/playback.test.cjs tests/pwa-login.test.cjs tests/download-automation.test.cjs tests/tray.test.cjs tests/steam-network.test.cjs tests/review.test.cjs",
+    "test": "node --test tests/replay-output.test.cjs tests/core.test.js tests/sync-engine.test.cjs tests/session-vault.test.cjs tests/source-parsers.test.cjs tests/pwa-client.test.cjs tests/secret-store.test.cjs tests/replay-controls.test.cjs tests/playback.test.cjs tests/pwa-login.test.cjs tests/download-automation.test.cjs tests/tray.test.cjs tests/steam-network.test.cjs tests/review.test.cjs tests/appearance.test.cjs tests/studio-voice.test.cjs tests/recording-reliability.test.cjs tests/studio-map-hud.test.cjs",
     "test:pwa-login": "node tests/pwa-login-desktop.cjs",
     "test:desktop": "node tests/desktop.cjs",
     "test:auto": "node tests/auto-desktop.cjs",
     "dist": "electron-builder --win nsis --x64",
-    "test:startup": "node tests/startup-desktop.cjs"
+    "test:startup": "node tests/startup-desktop.cjs",
+    "predist": "node scripts/setup-source2.cjs"
   },
   "dependencies": {
     "@laihoe/demoparser2": "0.42.0",
@@ -63,6 +64,10 @@
       {
         "from": "node_modules/ffmpeg-static/ffmpeg.exe.README",
         "to": "ffmpeg/BUILD-INFO.txt"
+      },
+      {
+        "from": "vendor/source2-cli",
+        "to": "source2-cli"
       }
     ],
     "win": {
@@ -76,7 +81,7 @@
       "src/review-worker.js"
     ],
     "nsis": {
-      "artifactName": "CS2-Demo-Desk-Setup-1.3.0-x64.exe",
+      "artifactName": "CS2-Demo-Desk-Setup-1.3.1-x64.exe",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,

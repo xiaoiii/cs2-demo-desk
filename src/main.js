@@ -23,6 +23,9 @@ const {createRecording,gameCommand,playerCommand}=require('./studio-recording');
 const {createEditor}=require('./studio-editor');
 const {createStudioSecrets}=require('./studio-secrets');
 const {reviewWithAI,endpoint:aiEndpoint}=require('./studio-ai');
+const {createMapService}=require('./studio-map');
+const {createVoiceService}=require('./studio-voice');
+const {createVoiceHud}=require('./studio-hud');
 const {promisify}=require('node:util');
 
 const { isDirectory, gameReplayDirectory, publishDemos } = require('./replay-output');
@@ -38,6 +41,7 @@ let automation, automationTimer, startupPending = true;
 let trayController, exitRequested=false;
 let networkTesting=false,networkSaving=false;
 let reviews,studioObs,studioRecording,studioEditor,studioSecrets,ffmpeg,studioRecordingBusy=false,studioRecordingPromise,studioExportPromise;
+let studioMaps,studioVoice,voiceHud;
 const studioSettings=()=>state.settings.studio||{};
 async function playbackLocations(){
   let steam=state.settings.steamPath||await detectSteam();
@@ -332,6 +336,12 @@ async function command(action, data = {}) {
     case 'review-players': return reviews.players(data.id);
     case 'review-analyze': return reviews.analyze(data.id,data.playerId);
     case 'review-radar': return reviews.radar(data.id,data.tick,data.endTick);
+    case 'review-map': {const meta=await reviews.players(data.id);let game=state.settings.cs2InstallPath;if(!game||!fs.existsSync(game)){const steam=state.settings.steamPath||await detectSteam();game=findInLibraries(steam?[path.dirname(steam)]:[]);}if(!game)throw Error('未找到 CS2 安装目录，可在偏好设置中指定。');return studioMaps.load(game,meta.map);}
+    case 'review-voice': {const record=reviews.get(data.id),meta=await reviews.players(data.id),value=await studioVoice.analyze(record.path);voiceHud.prepare(value,meta.players);return {...value,packets:undefined};}
+    case 'studio-voice-seek': {if(studioRecordingBusy)throw Error('录制中不能切换语音预览。');return voiceHud.seek(data.tick);}
+    case 'studio-voice-hud': {if(studioRecordingBusy)throw Error('请先结束录制。');const url=await voiceHud.start();clipboard.writeText(url);return {url,mode:'preview'};}
+    case 'studio-voice-obs': {if(studioRecordingBusy)throw Error('请先结束录制。');return studioObs.addVoiceHud(await voiceHud.start(),studioSettings().obsScene);}
+    case 'studio-voice-clear': voiceHud.clear();return true;
     case 'review-open-record': {
       const record=state.items.find(x=>x.id===data.id&&x.status==='completed');if(!record)throw new Error('请先完成 Demo 下载。');if(!record.files?.length)await extract(record);
       const filename=record.files?.[Math.max(0,Number(data.index)||0)];if(!filename)throw new Error('未找到 DEM 文件。');const row=reviews.add(filename);return {record:row,meta:await reviews.players(row.id)};
@@ -348,6 +358,7 @@ async function command(action, data = {}) {
       state.settings.studio=next;await studioObs.close();persist();return studioSecrets.status();
     }
     case 'studio-record': {
+      voiceHud.clear();
       if(studioRecordingBusy)throw new Error('已有录制任务。');const analysis=await reviews.analyze(data.id,data.playerId);const ids=[...new Set(Array.isArray(data.clipIds)?data.clipIds:[])];const available=new Map(analysis.clips.map(x=>[x.id,x]));let segments=ids.filter(id=>available.has(id)).map(id=>available.get(id));if(data.whole===true)segments=[{label:'整场个人 POV',startTick:Math.min(...analysis.clips.filter(x=>x.kind==='round').map(x=>x.startTick)),endTick:analysis.meta.endTick}];if(!segments.length)throw new Error('请选择录制片段。');if((await studioObs.status()).recording)throw new Error('OBS 已在录制。');await playbackLocations();studioRecordingBusy=true;studioRecordingPromise=studioRecording.execute({demo:reviews.get(data.id),player:analysis.player,segments,scene:studioSettings().obsScene}).catch(error=>notice(error.message)).finally(()=>{studioRecordingBusy=false;});return true;
     }
     case 'studio-record-cancel': studioRecording.cancel();return true;
@@ -576,6 +587,8 @@ app.whenReady().then(async () => {
     const child=utilityProcess.fork(file.replace('app.asar','app.asar.unpacked'),[],{serviceName:'Demo Desk DEM Parser',stdio:'ignore'});
     child.once('spawn',()=>child.postMessage(options.workerData));child.terminate=async()=>{child.kill();};return child;
   }});studioSecrets=createStudioSecrets({filename:path.join(studioDirectory,'connections.bin'),safeStorage});
+  studioMaps=createMapService({directory:path.join(studioDirectory,'maps'),decoder:app.isPackaged?path.join(process.resourcesPath,'source2-cli','Source2Viewer-CLI.exe'):path.join(__dirname,'..','vendor','source2-cli','Source2Viewer-CLI.exe')});
+  studioVoice=createVoiceService({workerFactory:(file,options)=>{const child=utilityProcess.fork(file,[],{serviceName:'Demo Desk Voice Parser',stdio:'ignore'});child.once('spawn',()=>child.postMessage(options.workerData));child.terminate=async()=>{child.kill();};return child;}});voiceHud=createVoiceHud();
   studioObs=createObs({settings:studioSettings,secrets:studioSecrets.get});
   studioRecording=createRecording({obs:studioObs,launch:launchStudioDemo,gameExe:()=>state.settings.cs2InstallPath,directory:studioDirectory});
   ffmpeg=app.isPackaged?path.join(process.resourcesPath,'ffmpeg','ffmpeg.exe'):require('ffmpeg-static');studioEditor=createEditor({directory:studioDirectory,ffmpeg});
@@ -627,7 +640,7 @@ app.whenReady().then(async () => {
     catch {notice('托盘图标创建失败，关闭窗口时将退出软件。');}
   }
   automation = createDownloadAutomation({state,queue:ids=>{void command('queue',{ids});},
-    isBusy:()=>startupPending||networkTesting||networkSaving||reviews.busy||studioRecordingBusy||studioEditor.busy||active.size||pending.size||extracting.size||resolvingDownloads.size||playbackBusy||pwaSyncing||Boolean(sourceWin&&!sourceWin.isDestroyed())||BrowserWindow.getAllWindows().length>1,
+    isBusy:()=>startupPending||networkTesting||networkSaving||reviews.busy||studioMaps.busy||studioVoice.busy||studioRecordingBusy||studioEditor.busy||active.size||pending.size||extracting.size||resolvingDownloads.size||playbackBusy||pwaSyncing||Boolean(sourceWin&&!sourceWin.isDestroyed())||BrowserWindow.getAllWindows().length>1,
     quit:requestExit,onChange:()=>broadcast(false)});
   automationTimer=setInterval(()=>{if(!quitting)automation.tick();},500);
   win.webContents.once('did-finish-load', () => {
@@ -648,7 +661,7 @@ app.whenReady().then(async () => {
   win.on('close', event => {
     if (quitting) return;
     if(trayController&&!exitRequested){event.preventDefault();win.hide();trayController.announce();return;}
-    if (!testing && (active.size || pending.size || extracting.size || resolvingDownloads.size || reviews.busy || studioRecordingBusy || studioEditor.busy)) {
+    if (!testing && (active.size || pending.size || extracting.size || resolvingDownloads.size || reviews.busy || studioVoice.busy || studioMaps.busy || studioRecordingBusy || studioEditor.busy)) {
       const answer = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['继续下载', '退出软件'], defaultId: 0, cancelId: 0, title: '仍有任务进行中', message: '退出会中断下载或解压。重新打开后，可手动重试下载。' });
       if (answer === 0) { exitRequested=false;event.preventDefault(); return; }
     }
@@ -658,7 +671,7 @@ app.whenReady().then(async () => {
     sourceWin?.close(); clearTimeout(saveTimer); persist();
     vault.stop();
     studioRecording.cancel();studioEditor.cancel();
-    Promise.allSettled([vault.save(),reviews.stop(),studioRecordingPromise,studioExportPromise,studioObs.close(), ...[...extracting.values()].filter(job => job.ready).map(job => job.completion)]).then(()=>closeNetworks()).catch(()=>{}).finally(() => { clearTimeout(saveTimer); persist(); trayController?.destroy();trayController=null;win.destroy(); app.quit(); });
+    Promise.allSettled([vault.save(),reviews.stop(),studioVoice.stop(),studioMaps.stop(),voiceHud.close(),studioRecordingPromise,studioExportPromise, ...[...extracting.values()].filter(job => job.ready).map(job => job.completion)]).then(()=>studioObs.close()).then(()=>closeNetworks()).catch(()=>{}).finally(() => { clearTimeout(saveTimer); persist(); trayController?.destroy();trayController=null;win.destroy(); app.quit(); });
   });
 });
 app.on('window-all-closed', () => app.quit());
