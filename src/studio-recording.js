@@ -83,14 +83,14 @@ function createRecording({obs,launch,gameExe,directory,consoleCommand=gameComman
     playerAccount(player);
     // Claim before awaiting OBS so concurrent clicks cannot launch two tasks.
     running=true;abort=false;task={phase:'launching',message:'正在通过 Steam 启动录像',done:0,total:segments.length};
-    let server,config,configText='',ownedConfig=false,controlled=false,activeSegment=null,recordingStarted=false,monitor;
+    let server,config,configText='',ownedConfig=false,controlled=false,activeSegment=null,actualEndTick,recordingStarted=false,monitor;
     let observed='',observedAt=-Infinity,observedSerial=0,observedSlot,consoleLogInitialized=false,targetSlot,targetSlotAt=-Infinity;
     const stoppedSegment=async complete=>{
       if(!recordingStarted)return;
       const saved=await obs.stop();
       recordingStarted=false;
       if(saved?.outputPath&&activeSegment){
-        clips.unshift({id:randomBytes(12).toString('hex'),path:saved.outputPath,name:activeSegment.label||'POV 片段',player:player.name,playerId:player.id,reviewId:demo.id,sourceClipId:activeSegment.id||'',created:Date.now(),startTick:activeSegment.startTick,endTick:activeSegment.endTick,complete});persist();
+        clips.unshift({id:randomBytes(12).toString('hex'),path:saved.outputPath,name:activeSegment.label||'POV 片段',player:player.name,playerId:player.id,reviewId:demo.id,sourceClipId:activeSegment.id||'',created:Date.now(),startTick:activeSegment.startTick,endTick:activeSegment.endTick,...(actualEndTick===undefined?{}:{actualEndTick}),complete});persist();
       }
     };
     const freshPOV=()=>observed===String(player.id)&&now()-observedAt<=5000;
@@ -161,7 +161,9 @@ function createRecording({obs,launch,gameExe,directory,consoleCommand=gameComman
         let selectionSerial;
         const selectPOV=async candidate=>{
           observed='';observedAt=-Infinity;observedSlot=undefined;selectionSerial=observedSerial;
-          await acknowledgement(`${playerCommand(player,candidate)}; demoui false`);
+          // demoui toggles the panel; repeating it during calibration can
+          // reopen it. This CS2 ConVar explicitly disables playback controls.
+          await acknowledgement(`${playerCommand(player,candidate)}; demo_ui_mode 0`);
           for(let i=0;i<20&&!abort;i++){if(observedSerial>selectionSerial&&freshPOV())return true;await wait(500);}
           return false;
         };
@@ -177,7 +179,7 @@ function createRecording({obs,launch,gameExe,directory,consoleCommand=gameComman
         }
         if(abort)break;
         if(!verified)throw new Error(slot===undefined?'游戏未提供所选玩家的 SteamID 视角映射，昵称切换也未通过身份校验。请重新载入录像后再试。':'游戏未确认所选玩家 SteamID 对应的视角，已停止录制。请关闭自动导播或重新载入录像。');
-        activeSegment=segment;
+        activeSegment=segment;actualEndTick=undefined;
         // OBS captures before the first demo frame advances.
         await obs.start(scene);recordingStarted=true;
         if(abort)break;
@@ -194,8 +196,13 @@ function createRecording({obs,launch,gameExe,directory,consoleCommand=gameComman
           if(events.some(event=>event.kind==='ended'))throw new Error('录像或游戏提前结束，素材标记为未完成。');
           const paused=events.filter(event=>event.kind==='pause').at(-1);
           if(paused){
-            if(Math.abs(paused.tick-segment.endTick)<=1){completed=true;break;}
-            throw new Error(`录像在 Tick ${paused.tick} 提前暂停，素材标记为未完成。`);
+            actualEndTick=paused.tick;
+            // CS2 can report the pause after its frame boundary. Allow at most
+            // four trailing ticks (62.5 ms at 64 ticks/s), retaining the actual
+            // native pause position instead of claiming the requested end.
+            if(paused.tick>=segment.endTick-1&&paused.tick<=segment.endTick+4){completed=true;break;}
+            if(paused.tick<segment.endTick-1)throw new Error(`录像在 Tick ${paused.tick} 提前暂停（目标 ${segment.endTick}），素材标记为未完成。`);
+            throw new Error(`录像在 Tick ${paused.tick} 晚于目标 ${segment.endTick} 暂停，超过允许的 4 Tick 尾部容差，素材标记为未完成。`);
           }
           await wait(250);
         }

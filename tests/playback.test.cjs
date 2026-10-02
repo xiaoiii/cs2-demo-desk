@@ -15,6 +15,7 @@ test('Copies replay to safe game-relative name and creates automatic config with
   const stage=await preparePlayback(f.game,f.source),files=stageFiles(stage.gameExe,stage.id);
   assert.deepEqual(fs.readFileSync(files.demo),fs.readFileSync(f.source));
   assert.ok(fs.readFileSync(files.cfg,'ascii').includes(`playdemo "${files.name}.dem"\ndemoui true`));
+  assert.ok(fs.readFileSync(files.cfg,'ascii').includes('demo_ui_mode 2\nplaydemo'));
   assert.equal(fs.readFileSync(files.cfg,'ascii').includes(f.source),false);
   let received;
   await launchPlayback(f.steam,stage,(exe,args,opts)=>{received={exe,args,opts};const c=new EventEmitter();c.unref=()=>{};process.nextTick(()=>c.emit('spawn'));return c;});
@@ -23,6 +24,28 @@ test('Copies replay to safe game-relative name and creates automatic config with
   await cleanupPlayback(stage,f.game);
   assert.equal(fs.existsSync(files.demo),false);assert.equal(fs.existsSync(files.cfg),false);
   assert.equal(fs.existsSync(f.source),true);assert.equal(fs.readFileSync(autoexec,'utf8'),'user settings');
+ }finally{fs.rmSync(f.dir,{recursive:true,force:true});}
+});
+
+test('Recording starts without the demo controller while preserving bindings, Steam launch and a separate log',async()=>{
+ const f=fixture();try{
+  const controls=require('../src/replay-controls').defaults();controls.enabled=true;
+  const stage=await preparePlayback(f.game,f.source,controls,{xray:true,cleanHud:false},{showDemoUI:false});
+  const files=stageFiles(stage.gameExe,stage.id),cfg=fs.readFileSync(files.cfg,'ascii');
+  assert.ok(cfg.indexOf('demo_ui_mode 0\n')>=0&&cfg.indexOf('demo_ui_mode 0\n')<cfg.indexOf('playdemo '));
+  assert.equal(/^\s*demoui(?:\s|$)/m.test(cfg),false);
+  assert.ok(cfg.includes('exec demodesk_controls\n'));
+  assert.ok(cfg.includes(`playdemo "${files.name}.dem"`));
+  assert.ok(cfg.includes('hideconsole\n'));
+  assert.deepEqual(fs.readFileSync(files.demo),fs.readFileSync(f.source));
+  let received;
+  await launchPlayback(f.steam,stage,(exe,args,opts)=>{received={exe,args,opts};const c=new EventEmitter();c.unref=()=>{};process.nextTick(()=>c.emit('spawn'));return c;});
+  assert.equal(received.exe,f.steam);
+  assert.deepEqual(received.args,['-applaunch','730','-condebug','-consolelog',`${files.name}.log`,'+exec',files.name]);
+  assert.equal(received.opts.shell,false);
+  const viewing=await preparePlayback(f.game,f.source),viewingFiles=stageFiles(f.game,viewing.id);
+  assert.notEqual(viewingFiles.log,files.log);
+  assert.match(fs.readFileSync(viewingFiles.cfg,'ascii'),/demo_ui_mode 2\nplaydemo[^\n]+\ndemoui true/);
  }finally{fs.rmSync(f.dir,{recursive:true,force:true});}
 });
 test('Rejects invalid demos, direct CS2 launch and forged cleanup descriptors',async()=>{

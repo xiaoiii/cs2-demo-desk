@@ -52,10 +52,10 @@ async function playbackLocations(){
   if(path.basename(game).toLowerCase()!=='cs2.exe')throw new Error('请选择 CS2 安装目录中的 cs2.exe。');
   Object.assign(state.settings,{steamPath:steam,cs2InstallPath:game});persist();return {steam,game};
 }
-async function launchStudioDemo(row){
+async function launchStudioDemo(row,options={}){
   if(await isCs2Running())throw new Error('请先退出 CS2，再由 Steam 载入所选录像。');
   const {steam,game}=await playbackLocations();await cleanupPlayback(state.settings.playbackStage,game);
-  const stage=await preparePlayback(game,row.path,state.settings.replayControls,studioSettings());state.settings.playbackStage=stage;persist();await launchPlayback(steam,stage);return stage;
+  const stage=await preparePlayback(game,row.path,state.settings.replayControls,studioSettings(),options);state.settings.playbackStage=stage;persist();await launchPlayback(steam,stage);return stage;
 }
 async function videoInfo(filename){
   let text='';try{const r=await promisify(execFile)(ffmpeg,['-hide_banner','-i',filename],{windowsHide:true,timeout:15000,maxBuffer:200000});text=r.stderr;}catch(error){text=error.stderr||'';}
@@ -590,7 +590,7 @@ app.whenReady().then(async () => {
   studioMaps=createMapService({directory:path.join(studioDirectory,'maps'),decoder:app.isPackaged?path.join(process.resourcesPath,'source2-cli','Source2Viewer-CLI.exe'):path.join(__dirname,'..','vendor','source2-cli','Source2Viewer-CLI.exe')});
   studioVoice=createVoiceService({workerFactory:(file,options)=>{const child=utilityProcess.fork(file,[],{serviceName:'Demo Desk Voice Parser',stdio:'ignore'});child.once('spawn',()=>child.postMessage(options.workerData));child.terminate=async()=>{child.kill();};return child;}});voiceHud=createVoiceHud();
   studioObs=createObs({settings:studioSettings,secrets:studioSecrets.get});
-  studioRecording=createRecording({obs:studioObs,launch:launchStudioDemo,gameExe:()=>state.settings.cs2InstallPath,directory:studioDirectory});
+  studioRecording=createRecording({obs:studioObs,launch:row=>launchStudioDemo(row,{showDemoUI:false}),gameExe:()=>state.settings.cs2InstallPath,directory:studioDirectory});
   ffmpeg=app.isPackaged?path.join(process.resourcesPath,'ffmpeg','ffmpeg.exe'):require('ffmpeg-static');studioEditor=createEditor({directory:studioDirectory,ffmpeg});
   state.settings.steamNetwork=normalizeNetwork(state.settings.steamNetwork);
   try {await applyNetwork(sourceSession,state.settings.steamNetwork);}
